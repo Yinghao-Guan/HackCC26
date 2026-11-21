@@ -1,26 +1,28 @@
-import { parseSolveResult, type SolveRequest, type SolveResult } from "@/lib/solve";
+import { parseGraphResult, type GraphResult } from "@/lib/graph";
+import { parseSolveResult, type SolveResult } from "@/lib/solve";
 
-/** What the panel shows under the Solve button. */
+/** The things the AI buttons can do. */
+export type AiAction = "solve" | "graph";
+
+/** What the panel shows under the AI buttons. */
 export type AiStatus =
   | { state: "idle" }
-  | { state: "loading" }
+  | { state: "loading"; action: AiAction }
   | { state: "message"; tone: "info" | "error"; text: string };
 
 const REQUEST_TIMEOUT_MS = 90_000;
 
 /**
- * Send the board's image to the server to be read and solved.
+ * Send the board's image to one of the AI routes and return its JSON reply.
  * Throws an Error with a message that is fine to show the user.
  */
-export async function requestSolve(image: string): Promise<SolveResult> {
-  const body: SolveRequest = { image };
-
+async function postImage(url: string, image: string): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch("/api/solve", {
+    response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ image }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
@@ -39,8 +41,21 @@ export async function requestSolve(image: string): Promise<SolveResult> {
         : "Something went wrong.";
     throw new Error(message);
   }
+  return data;
+}
 
-  const result = parseSolveResult(data);
-  if (!result) throw new Error("The answer came back in an unexpected format.");
+const UNEXPECTED_FORMAT = "The answer came back in an unexpected format.";
+
+/** Have the AI read the board and solve the problem on it. */
+export async function requestSolve(image: string): Promise<SolveResult> {
+  const result = parseSolveResult(await postImage("/api/solve", image));
+  if (!result) throw new Error(UNEXPECTED_FORMAT);
+  return result;
+}
+
+/** Have the AI read the equations on the board and say how to graph them. */
+export async function requestGraph(image: string): Promise<GraphResult> {
+  const result = parseGraphResult(await postImage("/api/graph", image));
+  if (!result) throw new Error(UNEXPECTED_FORMAT);
   return result;
 }

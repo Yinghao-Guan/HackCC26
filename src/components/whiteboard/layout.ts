@@ -5,14 +5,26 @@ export interface Rect {
   height: number;
 }
 
+export interface Size {
+  width: number;
+  height: number;
+}
+
 export const ANSWER_CARD_WIDTH = 380;
+export const GRAPH_PLOT_SIZE = 400;
+export const GRAPH_CARD_WIDTH = GRAPH_PLOT_SIZE + 40;
 
 const MARGIN = 16; // keep cards this far from the edges of the view
 const GAP = 24; // space between the ink and a card
 
-/** Cards size themselves to their content; this guess is close enough for placing them. */
-export function estimateAnswerHeight(stepCount: number): number {
-  return 170 + stepCount * 48;
+// Cards size themselves to their content; these guesses are close enough for placing them.
+
+export function answerCardSize(stepCount: number): Size {
+  return { width: ANSWER_CARD_WIDTH, height: 170 + stepCount * 48 };
+}
+
+export function graphCardSize(curveCount: number): Size {
+  return { width: GRAPH_CARD_WIDTH, height: 90 + GRAPH_PLOT_SIZE + curveCount * 44 };
 }
 
 const overlaps = (a: Rect, b: Rect) =>
@@ -22,20 +34,18 @@ const overlaps = (a: Rect, b: Rect) =>
   b.y < a.y + a.height;
 
 /**
- * Where to put a new answer card, in board coordinates. It never covers the
- * writing it answers (`ink`) or another card. It prefers a spot fully inside
- * the part of the board you can see (`viewport`); if there is none, it goes
- * just below the writing and the view scrolls to it (see `viewToReveal`).
+ * Where to put a new card of the given size, in board coordinates. It never
+ * covers the writing it belongs to (`ink`) or another card. It prefers a spot
+ * fully inside the part of the board you can see (`viewport`); if there is
+ * none, it goes just below the writing and the view scrolls to it (see
+ * `viewToReveal`).
  */
-export function placeAnswerCard(
+export function placeCard(
   ink: Rect,
   viewport: Rect,
   taken: Rect[],
-  stepCount: number,
+  { width, height }: Size,
 ): { x: number; y: number } {
-  const width = ANSWER_CARD_WIDTH;
-  const height = estimateAnswerHeight(stepCount);
-
   const left = viewport.x + MARGIN;
   const right = viewport.x + viewport.width - MARGIN;
   const top = viewport.y + MARGIN;
@@ -72,9 +82,9 @@ export function placeAnswerCard(
 
 /**
  * Where to scroll the view (its top-left corner, in board coordinates) so a
- * new answer is seen. If the writing and the answer fit on screen together,
- * this scrolls as little as possible to show both. If not, it shows the
- * writing and the start of the answer, or just the answer when they are far apart.
+ * new card is seen. If the writing and the card fit on screen together, this
+ * scrolls as little as possible to show both. If not, it shows the writing and
+ * the start of the card, or just the card when they are far apart.
  */
 export function viewToReveal(ink: Rect, card: Rect, viewport: Rect): { x: number; y: number } {
   const axis = (

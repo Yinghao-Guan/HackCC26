@@ -1,10 +1,16 @@
+import type { GraphCurve, GraphWindow } from "@/lib/graph";
+import { answerCardSize, graphCardSize, type Size } from "./layout";
 import type { Stroke, StrokeDraft } from "./strokes";
 
-/** An answer the AI wrote on the board, with the spot it was placed at. */
-export interface BoardAnswer {
+interface Placed {
   id: number;
   x: number;
   y: number;
+}
+
+/** The AI's reading, working and answer for a problem. */
+export interface AnswerCardData extends Placed {
+  kind: "answer";
   /** The problem as the AI read it, in LaTeX. */
   read: string;
   /** The working, one LaTeX formula per line. */
@@ -13,11 +19,29 @@ export interface BoardAnswer {
   answer: string;
 }
 
-export type AnswerContent = Pick<BoardAnswer, "read" | "steps" | "answer">;
+/** A graph the AI drew from the equations on the board. */
+export interface GraphCardData extends Placed {
+  kind: "graph";
+  curves: GraphCurve[];
+  window: GraphWindow;
+}
+
+/** Something the AI wrote on the board next to your writing. */
+export type BoardCard = AnswerCardData | GraphCardData;
+
+/** A card before it has an id and a place on the board. */
+export type CardContent = Omit<AnswerCardData, keyof Placed> | Omit<GraphCardData, keyof Placed>;
+
+/** Roughly how big a card is on the board. */
+export function cardSize(card: CardContent | BoardCard): Size {
+  return card.kind === "answer"
+    ? answerCardSize(card.steps.length)
+    : graphCardSize(card.curves.length);
+}
 
 interface Snapshot {
   strokes: Stroke[];
-  answers: BoardAnswer[];
+  cards: BoardCard[];
 }
 
 export interface BoardState extends Snapshot {
@@ -30,23 +54,23 @@ export type BoardAction =
   | { type: "add"; stroke: StrokeDraft }
   | { type: "remove"; ids: number[] }
   | { type: "setText"; id: number; text: string }
-  | { type: "addAnswer"; content: AnswerContent; x: number; y: number }
-  | { type: "removeAnswer"; id: number }
+  | { type: "addCard"; content: CardContent; x: number; y: number }
+  | { type: "removeCard"; id: number }
   | { type: "clear" }
   | { type: "undo" };
 
 export const INITIAL_BOARD: BoardState = {
   strokes: [],
-  answers: [],
+  cards: [],
   past: [],
   nextId: 1,
 };
 
-// Strokes and answers are never changed once added, so each history entry just
+// Strokes and cards are never changed once added, so each history entry just
 // keeps references to the earlier lists.
 const snapshotOf = (state: BoardState): Snapshot => ({
   strokes: state.strokes,
-  answers: state.answers,
+  cards: state.cards,
 });
 
 export function boardReducer(state: BoardState, action: BoardAction): BoardState {
@@ -81,29 +105,26 @@ export function boardReducer(state: BoardState, action: BoardAction): BoardState
       return { ...state, strokes, past: history };
     }
 
-    case "addAnswer":
+    case "addCard":
       return {
         ...state,
-        answers: [
-          ...state.answers,
-          { id: state.nextId, x: action.x, y: action.y, ...action.content },
-        ],
+        cards: [...state.cards, { id: state.nextId, x: action.x, y: action.y, ...action.content }],
         past: [...state.past, snapshotOf(state)],
         nextId: state.nextId + 1,
       };
 
-    case "removeAnswer": {
-      const answers = state.answers.filter((a) => a.id !== action.id);
-      if (answers.length === state.answers.length) return state;
-      return { ...state, answers, past: [...state.past, snapshotOf(state)] };
+    case "removeCard": {
+      const cards = state.cards.filter((c) => c.id !== action.id);
+      if (cards.length === state.cards.length) return state;
+      return { ...state, cards, past: [...state.past, snapshotOf(state)] };
     }
 
     case "clear":
-      if (state.strokes.length === 0 && state.answers.length === 0) return state;
+      if (state.strokes.length === 0 && state.cards.length === 0) return state;
       return {
         ...state,
         strokes: [],
-        answers: [],
+        cards: [],
         past: [...state.past, snapshotOf(state)],
       };
 

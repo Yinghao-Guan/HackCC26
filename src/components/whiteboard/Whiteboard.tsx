@@ -8,22 +8,19 @@ import {
   useState,
   type WheelEvent,
 } from "react";
-import { requestSolve, type AiStatus } from "./ai";
+import { requestGraph, requestSolve, type AiAction, type AiStatus } from "./ai";
 import { AnswerCard } from "./AnswerCard";
-import { boardReducer, INITIAL_BOARD } from "./board";
+import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
 import { DrawingCanvas } from "./DrawingCanvas";
 import { exportInk } from "./exportInk";
-import {
-  ANSWER_CARD_WIDTH,
-  estimateAnswerHeight,
-  placeAnswerCard,
-  viewToReveal,
-} from "./layout";
+import { GraphCard } from "./GraphCard";
+import { placeCard, viewToReveal, type Rect } from "./layout";
 import { SettingsPanel } from "./SettingsPanel";
 import { DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
 import type { Point, Stroke, StrokeDraft } from "./strokes";
 import { TEXT_LINE_HEIGHT } from "./text";
 import { TextEditor, type TextEdit } from "./TextEditor";
+import { graphFromTypedText } from "./typedGraph";
 
 const ORIGIN: Point = { x: 0, y: 0 };
 
@@ -138,60 +135,93 @@ export function Whiteboard() {
     [finishEdit, setEditing, settings.color, settings.textSize],
   );
 
-  /** Read what is on screen, solve it, and write the answer next to it. */
-  const solve = useCallback(async () => {
-    const rect = boardRef.current?.getBoundingClientRect();
-    const viewport = { x: view.x, y: view.y, width: rect?.width ?? 0, height: rect?.height ?? 0 };
+  /** Put a card beside the writing it belongs to, and scroll to it if it isn't on screen. */
+  const addCard = useCallback(
+    (content: CardContent, ink: Rect, viewport: Rect) => {
+      const size = cardSize(content);
+      const taken = board.cards.map((card) => ({ x: card.x, y: card.y, ...cardSize(card) }));
+      const position = placeCard(ink, viewport, taken, size);
+      dispatch({ type: "addCard", content, ...position });
+      // Use the view as it is now, in case you scrolled while waiting.
+      setView((current) =>
+        viewToReveal(ink, { ...position, ...size }, { ...viewport, x: current.x, y: current.y }),
+      );
+    },
+    [board.cards],
+  );
 
-    const ink = exportInk(board.strokes, viewport);
-    if (!ink) {
-      const somethingElsewhere = board.strokes.some((s) => s.tool !== "eraser");
-      setAi({
-        state: "message",
-        tone: "info",
-        text: somethingElsewhere
-          ? "I read what's on screen. Scroll to your problem and try again."
-          : "Write a math problem on the board first.",
-      });
-      return;
-    }
+  /**
+   * Have the AI read what is on screen and write its result (an answer or a
+   * graph) on the board next to the writing.
+   */
+  const runAi = useCallback(
+    async (action: AiAction) => {
+      const rect = boardRef.current?.getBoundingClientRect();
+      const viewport = {
+        x: view.x,
+        y: view.y,
+        width: rect?.width ?? 0,
+        height: rect?.height ?? 0,
+      };
 
-    setAi({ state: "loading" });
-    try {
-      const result = await requestSolve(ink.dataUrl);
-      if (result.status !== "solved") {
-        setAi({ state: "message", tone: "info", text: result.message });
+      // Typed equations can be graphed on the spot: no AI, no waiting.
+      if (action === "graph") {
+        const typed = graphFromTypedText(board.strokes, viewport);
+        if (typed) {
+          addCard({ kind: "graph", curves: typed.curves, window: typed.window }, typed.ink, viewport);
+          setAi({ state: "idle" });
+          return;
+        }
+      }
+
+      const ink = exportInk(board.strokes, viewport);
+      if (!ink) {
+        const somethingElsewhere = board.strokes.some((s) => s.tool !== "eraser");
+        setAi({
+          state: "message",
+          tone: "info",
+          text: somethingElsewhere
+            ? "I read what's on screen. Scroll to your writing and try again."
+            : action === "graph"
+              ? "Write an equation on the board first."
+              : "Write a math problem on the board first.",
+        });
         return;
       }
 
-      // Put the answer beside the problem, then scroll to it if it isn't on screen.
-      const height = estimateAnswerHeight(result.steps.length);
-      const taken = board.answers.map((a) => ({
-        x: a.x,
-        y: a.y,
-        width: ANSWER_CARD_WIDTH,
-        height: estimateAnswerHeight(a.steps.length),
-      }));
-      const position = placeAnswerCard(ink.bounds, viewport, taken, result.steps.length);
-      dispatch({
-        type: "addAnswer",
-        content: { read: result.read, steps: result.steps, answer: result.answer },
-        ...position,
-      });
-      const card = { ...position, width: ANSWER_CARD_WIDTH, height };
-      // Use the view as it is now, in case you scrolled while waiting.
-      setView((current) =>
-        viewToReveal(ink.bounds, card, { ...viewport, x: current.x, y: current.y }),
-      );
-      setAi({ state: "idle" });
-    } catch (error) {
-      setAi({
-        state: "message",
-        tone: "error",
-        text: error instanceof Error ? error.message : "Something went wrong.",
-      });
-    }
-  }, [board.strokes, board.answers, view]);
+      setAi({ state: "loading", action });
+      try {
+        let content: CardContent;
+        if (action === "solve") {
+          const result = await requestSolve(ink.dataUrl);
+          if (result.status !== "solved") {
+            setAi({ state: "message", tone: "info", text: result.message });
+            return;
+          }
+          content = { kind: "answer", read: result.read, steps: result.steps, answer: result.answer };
+        } else {
+          const result = await requestGraph(ink.dataUrl);
+          if (result.status !== "graphed") {
+            setAi({ state: "message", tone: "info", text: result.message });
+            return;
+          }
+          content = { kind: "graph", curves: result.curves, window: result.window };
+        }
+
+        addCard(content, ink.bounds, viewport);
+        setAi({ state: "idle" });
+      } catch (error) {
+        setAi({
+          state: "message",
+          tone: "error",
+          text: error instanceof Error ? error.message : "Something went wrong.",
+        });
+      }
+    },
+    [board.strokes, view, addCard],
+  );
+  const solve = useCallback(() => runAi("solve"), [runAi]);
+  const graph = useCallback(() => runAi("graph"), [runAi]);
 
   // Ctrl/Cmd+Z undoes the last change to the board.
   useEffect(() => {
@@ -236,7 +266,7 @@ export function Whiteboard() {
           onPan={pan}
         />
 
-        {/* Things placed at board points (the text box and answers) scroll with the board. */}
+        {/* Things placed at board points (the text box and AI cards) scroll with the board. */}
         <div
           className="absolute left-0 top-0"
           style={{ transform: `translate(${-view.x}px, ${-view.y}px)` }}
@@ -250,13 +280,21 @@ export function Whiteboard() {
             />
           )}
 
-          {board.answers.map((answer) => (
-            <AnswerCard
-              key={answer.id}
-              answer={answer}
-              onDismiss={() => dispatch({ type: "removeAnswer", id: answer.id })}
-            />
-          ))}
+          {board.cards.map((card) =>
+            card.kind === "answer" ? (
+              <AnswerCard
+                key={card.id}
+                card={card}
+                onDismiss={() => dispatch({ type: "removeCard", id: card.id })}
+              />
+            ) : (
+              <GraphCard
+                key={card.id}
+                card={card}
+                onDismiss={() => dispatch({ type: "removeCard", id: card.id })}
+              />
+            ),
+          )}
         </div>
       </main>
 
@@ -264,10 +302,11 @@ export function Whiteboard() {
         settings={settings}
         onSettingsChange={updateSettings}
         canUndo={board.past.length > 0}
-        canClear={board.strokes.length > 0 || board.answers.length > 0}
+        canClear={board.strokes.length > 0 || board.cards.length > 0}
         canResetView={view.x !== 0 || view.y !== 0}
         ai={ai}
         onSolve={solve}
+        onGraph={graph}
         onUndo={undo}
         onClear={clear}
         onResetView={resetView}

@@ -33,6 +33,10 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 Write a math problem on the board and press **Solve** in the side panel. The board's ink is sent to the Claude API (through the route in `src/app/api/solve/`), which reads the handwriting and solves it. The reading, the steps and the answer are written on the board next to the problem. This needs `ANTHROPIC_API_KEY` in `.env.local` (git-ignored); restart `npm run dev` after changing it.
 
+## AI: Graph
+
+Write an equation (or a few, like a system) and press **Graph**. Claude reads them through `src/app/api/graph/` and says how to plot each one: a formula and a sensible window. The board then draws the curves itself, as a crisp SVG with axes and a color key, next to your writing. Explicit functions (`y = x^2 - 3x + 2`, lines, `sin`, `1/x`) and implicit ones (circles, hyperbolas) both work. If what is on screen is only **typed** equations (Text tool) that follow the usual forms, the graph is drawn right away on your machine: no AI call, no waiting (about 14 ms in testing), and it works offline. Handwriting, sentences, LaTeX and anything unclear still go to Claude (a few seconds). The formula evaluator is in `src/lib/expression.ts` and the drawing math is in `src/lib/plot.ts`; neither needs a library.
+
 ## Scripts
 
 | Command | What it does |
@@ -47,6 +51,7 @@ Write a math problem on the board and press **Solve** in the side panel. The boa
 ```
 src/app/                    App Router: layout, pages, global styles
 src/app/api/solve/          Server route: reads the board image and solves it
+src/app/api/graph/          Server route: reads the board image and lists the curves to graph
 src/components/whiteboard/  Drawing canvas, stroke model, settings panel, answer cards
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation

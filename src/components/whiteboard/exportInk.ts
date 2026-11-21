@@ -1,5 +1,5 @@
 import type { Rect } from "./layout";
-import { paintStroke, strokeBounds, type Stroke } from "./strokes";
+import { isInView, paintStroke, strokeBounds, type Stroke } from "./strokes";
 
 const PADDING = 24; // white margin around the ink in the exported image, in pixels
 const TARGET_SIDE = 1024; // aim for about this size on the image's long side
@@ -11,18 +11,6 @@ export interface InkImage {
   dataUrl: string;
   /** Where that writing sits on the board, in board pixels. */
   bounds: Rect;
-}
-
-/** True if any part of a mark (including the pen's width) is inside the rectangle. */
-function isInView(stroke: Stroke, view: Rect): boolean {
-  const b = strokeBounds(stroke);
-  const half = stroke.tool === "text" ? 0 : stroke.size / 2;
-  return (
-    b.maxX + half >= view.x &&
-    b.minX - half <= view.x + view.width &&
-    b.maxY + half >= view.y &&
-    b.minY - half <= view.y + view.height
-  );
 }
 
 /**

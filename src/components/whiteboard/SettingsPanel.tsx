@@ -21,6 +21,7 @@ interface SettingsPanelProps {
   canResetView: boolean;
   ai: AiStatus;
   onSolve: () => void;
+  onGraph: () => void;
   onUndo: () => void;
   onClear: () => void;
   onResetView: () => void;
@@ -76,6 +77,7 @@ export function SettingsPanel({
   canResetView,
   ai,
   onSolve,
+  onGraph,
   onUndo,
   onClear,
   onResetView,
@@ -101,14 +103,24 @@ export function SettingsPanel({
       <h2 className="text-lg font-semibold tracking-tight">Settings</h2>
 
       <PanelSection title="AI">
-        <button
-          type="button"
-          onClick={onSolve}
-          disabled={ai.state === "loading"}
-          className="h-14 rounded-lg bg-emerald-600 text-lg font-semibold text-white transition-colors hover:bg-emerald-700 disabled:pointer-events-none disabled:opacity-60"
-        >
-          {ai.state === "loading" ? "Reading…" : "Solve"}
-        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={onSolve}
+            disabled={ai.state === "loading"}
+            className="h-14 rounded-lg bg-emerald-600 text-lg font-semibold text-white transition-colors hover:bg-emerald-700 disabled:pointer-events-none disabled:opacity-60"
+          >
+            {ai.state === "loading" && ai.action === "solve" ? "Reading…" : "Solve"}
+          </button>
+          <button
+            type="button"
+            onClick={onGraph}
+            disabled={ai.state === "loading"}
+            className="h-14 rounded-lg bg-blue-600 text-lg font-semibold text-white transition-colors hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-60"
+          >
+            {ai.state === "loading" && ai.action === "graph" ? "Drawing…" : "Graph"}
+          </button>
+        </div>
         <p
           role="status"
           className={`text-sm ${
@@ -116,10 +128,12 @@ export function SettingsPanel({
           }`}
         >
           {ai.state === "loading"
-            ? "Reading your handwriting and solving it. This can take a few seconds."
+            ? ai.action === "graph"
+              ? "Reading your equations and drawing the graph. This can take a few seconds."
+              : "Reading your handwriting and solving it. This can take a few seconds."
             : ai.state === "message"
               ? ai.text
-              : "Reads what's on screen and writes the answer next to it."}
+              : "Solve works out the answer. Graph draws the equation, and draws typed equations instantly."}
         </p>
       </PanelSection>
 

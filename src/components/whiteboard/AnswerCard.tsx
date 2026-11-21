@@ -1,18 +1,18 @@
 "use client";
 
-import type { BoardAnswer } from "./board";
+import type { AnswerCardData } from "./board";
 import { Latex } from "./Latex";
 import { ANSWER_CARD_WIDTH } from "./layout";
 
 const labelClass = "mb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500";
 
 interface AnswerCardProps {
-  answer: BoardAnswer;
+  card: AnswerCardData;
   onDismiss: () => void;
 }
 
 /** The AI's reading, working and answer, written on the board next to the problem. */
-export function AnswerCard({ answer, onDismiss }: AnswerCardProps) {
+export function AnswerCard({ card, onDismiss }: AnswerCardProps) {
   return (
     // The card lets pointer events through, so you can keep writing around and
     // over it. Only the dismiss button takes clicks.
@@ -20,8 +20,8 @@ export function AnswerCard({ answer, onDismiss }: AnswerCardProps) {
       className="pointer-events-none absolute rounded-2xl border-2 border-emerald-500 bg-white/95 p-5 shadow-lg"
       // Grows with long formulas, up to a limit, so they stay inside the card.
       style={{
-        left: answer.x,
-        top: answer.y,
+        left: card.x,
+        top: card.y,
         width: "max-content",
         minWidth: ANSWER_CARD_WIDTH,
         maxWidth: 720,
@@ -37,13 +37,13 @@ export function AnswerCard({ answer, onDismiss }: AnswerCardProps) {
       </button>
 
       <p className={labelClass}>I read</p>
-      <Latex source={answer.read} className="mb-3 text-xl" />
+      <Latex source={card.read} className="mb-3 text-xl" />
 
-      {answer.steps.length > 0 && (
+      {card.steps.length > 0 && (
         <>
           <p className={labelClass}>Steps</p>
           <ol className="mb-3 flex flex-col">
-            {answer.steps.map((step, index) => (
+            {card.steps.map((step, index) => (
               <li key={index} className="py-1">
                 <Latex source={step} className="text-lg" />
               </li>
@@ -54,7 +54,7 @@ export function AnswerCard({ answer, onDismiss }: AnswerCardProps) {
 
       <p className={labelClass}>Answer</p>
       <div className="rounded-lg bg-emerald-50 px-3 py-1 text-2xl text-emerald-900">
-        <Latex source={answer.answer} />
+        <Latex source={card.answer} />
       </div>
     </div>
   );
