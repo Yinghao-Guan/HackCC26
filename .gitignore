@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# Claude Code
+# ---------------------------------------------------------------------------
+CLAUDE.md
+claude.md
+AGENTS.md
+agents.md
+.claude/
+
+# ---------------------------------------------------------------------------
+# Environment files (keep committed templates like .env.example)
+# ---------------------------------------------------------------------------
+.env
+.env.*
+*.env
+!.env.example
+!.env.sample
+!.env.template
+.envrc
+
+# ---------------------------------------------------------------------------
+# Temporary files
+# ---------------------------------------------------------------------------
+temp/
+
+# ---------------------------------------------------------------------------
+# macOS
+# ---------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+# Custom folder icon file ("Icon" followed by a carriage return)
+Icon?
+
+# Thumbnails / resource forks
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+# Image file caches
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+
+# Folder config files
+[Dd]esktop.ini
+
+# Recycle Bin
+$RECYCLE.BIN/
+
+# Windows installer / archive files
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Windows shortcuts
+*.lnk
+
+# ---------------------------------------------------------------------------
+# JetBrains IDEs (WebStorm, IntelliJ IDEA, PyCharm, etc.)
+# ---------------------------------------------------------------------------
+.idea/
+.idea_modules/
+*.iml
+*.ipr
+*.iws
+
+# Plugin / crash-report artifacts
+atlassian-ide-plugin.xml
+com_crashlytics_export_strings.xml
+crashlytics.properties
+crashlytics-build.properties
+fabric.properties
+
+# ---------------------------------------------------------------------------
+# Visual Studio Code
+# ---------------------------------------------------------------------------
+.vscode/
+.vscode-test/
+.history/
+*.vsix
