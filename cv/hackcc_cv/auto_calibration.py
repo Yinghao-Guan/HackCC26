@@ -95,7 +95,7 @@ async def run_auto_calibration(state: ServerState) -> None:
             )
 
 
-async def _wait_for_camera_size(state: ServerState) -> tuple[int, int] | None:
+async def wait_for_camera_size(state: ServerState) -> tuple[int, int] | None:
     """The camera says "ok" when it opens, but its size is known only after the first
     frame; a calibration started right then must wait for it, not fail."""
     deadline = time.monotonic() + FRAME_TIMEOUT_SECONDS
@@ -110,7 +110,7 @@ async def _wait_for_camera_size(state: ServerState) -> tuple[int, int] | None:
 
 
 async def _calibrate(state: ServerState) -> None:
-    camera, camera_size = state.camera, await _wait_for_camera_size(state)
+    camera, camera_size = state.camera, await wait_for_camera_size(state)
     if camera is None or camera_size is None:
         await _fail(
             state,
