@@ -1,0 +1,27 @@
+[project]
+name = "hackcc-cv"
+version = "0.1.0"
+description = "Camera service for the projected whiteboard: calibration, hand tracking, gestures and reading the physical board."
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.165",
+    "uvicorn[standard]>=0.54",
+    "opencv-contrib-python>=5.1",
+    "mediapipe>=1.2.3",
+    "numpy>=2.5",
+]
+
+[dependency-groups]
+dev = [
+    "httpx2>=2.16.2",
+    "pytest>=8",
+    "pytest-cov>=6",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
