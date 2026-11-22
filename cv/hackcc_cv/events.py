@@ -76,8 +76,27 @@ class MapPoint:
     camera_point: tuple[float, float]
 
 
+@dataclass(frozen=True)
+class CalibrateAuto:
+    """Show the ArUco grid on the board and calibrate from it automatically."""
+
+
+@dataclass(frozen=True)
+class PatternShown:
+    """The board page has drawn the ArUco grid (sent after it is on screen)."""
+
+    run: int | None = None
+
+
 ClientMessage = (
-    Hello | Ping | StartManualCalibration | ManualCalibration | CancelCalibration | MapPoint
+    Hello
+    | Ping
+    | StartManualCalibration
+    | ManualCalibration
+    | CancelCalibration
+    | MapPoint
+    | CalibrateAuto
+    | PatternShown
 )
 
 
@@ -210,6 +229,13 @@ def parse_client_message(raw: str) -> ClientMessage:
         return _manual_calibration(body)
     if kind == "calibrate_cancel":
         return CancelCalibration()
+    if kind == "calibrate_auto":
+        return CalibrateAuto()
+    if kind == "calibration_pattern_shown":
+        run = body.get("run")
+        if run is not None and (isinstance(run, bool) or not isinstance(run, int)):
+            raise MessageError("'run' must be a whole number.")
+        return PatternShown(run)
     if kind == "map_point":
         point = _pair(body.get("camera_point"), "camera_point", -MAX_DISPLAY_SIDE, MAX_DISPLAY_SIDE)
         return MapPoint(point)
