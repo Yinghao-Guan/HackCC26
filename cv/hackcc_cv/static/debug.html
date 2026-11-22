@@ -31,12 +31,16 @@
   .probe::before, .probe::after { content: ""; position: absolute; background: var(--bad); }
   .probe::before { left: -18px; top: -1.5px; width: 36px; height: 3px; }
   .probe::after { left: -1.5px; top: -18px; width: 3px; height: 36px; }
+  /* ArUco calibration pattern: pure white page, crisp black-and-white markers. */
+  #pattern { position: fixed; inset: 0; background: #ffffff; display: none; z-index: 50; }
+  #pattern img { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
   button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; cursor: pointer; }
 </style>
 </head>
 <body>
 <canvas id="board" aria-label="Pointer events drawn as ink"></canvas>
 <div id="overlay" aria-hidden="true"></div>
+<div id="pattern" aria-hidden="true"></div>
 <div id="panel">
   <h1>CV bus debug: WebSocket <span id="url" class="muted"></span></h1>
   <div class="row"><span>Connection</span><span id="conn" class="bad">connecting…</span></div>
@@ -104,6 +108,25 @@
     $("panel").style.visibility = targets.length ? "hidden" : "visible";
   }
 
+  // Draw the ArUco grid the server sent, then tell it the pattern is really on screen.
+  function showPattern(markers, confirm, run) {
+    const layer = $("pattern");
+    layer.replaceChildren();
+    if (!markers.length) { layer.style.display = "none"; return; }
+    const loads = markers.map((m) => new Promise((resolve) => {
+      const img = new Image();
+      img.alt = ""; img.onload = () => resolve(true); img.onerror = () => resolve(false);
+      img.src = m.png;
+      Object.assign(img.style, { left: `${m.x}px`, top: `${m.y}px`, width: `${m.size}px`, height: `${m.size}px` });
+      layer.appendChild(img);
+    }));
+    layer.style.display = "block";
+    if (!confirm) return;
+    // Confirm only when every marker really loaded, echoing the run number.
+    Promise.all(loads).then((ok) => { if (ok.every(Boolean)) requestAnimationFrame(() => requestAnimationFrame(
+      () => send({ type: "calibration_pattern_shown", run }))); });
+  }
+
   function showProbe(e) {
     const el = document.createElement("div");
     el.className = "probe"; el.style.left = `${e.x}px`; el.style.top = `${e.y}px`;
@@ -116,6 +139,7 @@
       case "pointer": drawPointer(e); return;
       case "calibration_targets": showTargets(e.targets); break;
       case "calibration_probe": showProbe(e); break;
+      case "calibration_pattern": showPattern(e.markers, true, e.run); break;
       case "calibration": {
         const el = $("cal");
         el.textContent = e.status === "ok" ? `ok (${e.method}, ${e.reproj_error_px} px)` : `${e.status}: ${e.message}`;
