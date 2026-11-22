@@ -1,6 +1,19 @@
 import type { Rect } from "./layout";
 
 const PADDING = 14;
+// The "Step N" tag sits this far to the right of the ring, and is about this wide.
+const TAG_GAP = 8;
+const TAG_WIDTH = 84;
+
+/** The part of the board the ring and its tag cover, so a card can be kept clear of them. */
+export function mistakeMarkArea(box: Rect): Rect {
+  return {
+    x: box.x - PADDING,
+    y: box.y - PADDING,
+    width: box.width + PADDING * 2 + TAG_GAP + TAG_WIDTH,
+    height: box.height + PADDING * 2,
+  };
+}
 
 /** A red ring drawn around the line of writing that has the mistake. It sits on the board, so it scrolls with it. */
 export function MistakeMark({ box, step }: { box: Rect; step: number | null }) {

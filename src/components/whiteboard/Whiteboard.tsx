@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useReducer,
@@ -40,7 +41,7 @@ import { FingerUi } from "./fingerUi";
 import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
-import { MistakeMark } from "./MistakeMark";
+import { MistakeMark, mistakeMarkArea } from "./MistakeMark";
 import { resetAllPlots3D } from "./plot3dControls";
 import { ReplyCard } from "./ReplyCard";
 import type { Point, StrokeDraft } from "./strokes";
@@ -64,6 +65,18 @@ const VOICE_REPLIES: Record<VoiceCommand, string> = {
   check: "Checking your steps.",
   undo: "Undid the last change.",
 };
+
+// Keys for running the board from the laptop, for when a tap on the projected board misses.
+const KEYS: [string, string][] = [
+  ["S", "Solve"],
+  ["G", "Graph"],
+  ["C", "Check"],
+  ["V", "Speak (again to stop)"],
+  ["E", "Pen or eraser"],
+  ["R", "Reset the view"],
+  ["⌘Z", "Undo"],
+  ["?", "Show or hide these keys"],
+];
 
 // The check route accepts at most this many numbered lines.
 const MAX_CHECK_LINES = 60;
@@ -274,7 +287,20 @@ export function Whiteboard() {
           }
         }
 
-        addCard(content, ink.bounds, viewport);
+        // A circled line has a "Step N" tag to its right: the card goes beside that, not over it.
+        let near = ink.bounds;
+        if (content.kind === "check" && content.mark) {
+          const area = mistakeMarkArea(content.mark);
+          const left = Math.min(near.x, area.x);
+          const top = Math.min(near.y, area.y);
+          near = {
+            x: left,
+            y: top,
+            width: Math.max(near.x + near.width, area.x + area.width) - left,
+            height: Math.max(near.y + near.height, area.y + area.height) - top,
+          };
+        }
+        addCard(content, near, viewport);
         setAi({ state: "idle" });
       } catch (error) {
         setAi({
@@ -540,17 +566,50 @@ export function Whiteboard() {
   // Calibration needs the board clear, so the controls step aside while it shows things.
   const calibrating = pattern !== null || targets.length > 0 || calibrationScreen !== "off";
 
-  // Ctrl/Cmd+Z undoes the last change to the board.
+  // Keys (see KEYS): someone at the laptop can run the board when a tap on the projected
+  // board misses. Ctrl/Cmd+Z undoes the last change.
+  const [showKeys, setShowKeys] = useState(false);
+  const keyActions = useRef({ solve, graph, check, toggleVoice, toggleTool, resetView, undo, busy: false });
+  useEffect(() => {
+    keyActions.current = {
+      solve,
+      graph,
+      check,
+      toggleVoice,
+      toggleTool,
+      resetView,
+      undo,
+      // Working on something (asking the AI, or waiting for a picture of the board).
+      busy: ai.state !== "idle" && ai.state !== "message",
+    };
+  });
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      const actions = keyActions.current;
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        undo();
+        actions.undo();
+        return;
       }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+
+      const key = e.key.toLowerCase();
+      const aiAction = ({ s: actions.solve, g: actions.graph, c: actions.check } as Record<string, (() => void) | undefined>)[key];
+      if (aiAction) {
+        if (!actions.busy) aiAction();
+      } else if (key === "v") actions.toggleVoice();
+      else if (key === "e") actions.toggleTool();
+      else if (key === "r") actions.resetView();
+      else if (key === "?") setShowKeys((shown) => !shown);
+      else if (key === "escape") setShowKeys(false);
+      else return;
+      e.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [undo]);
+  }, []);
 
   return (
     <div className="relative h-dvh w-full overflow-hidden">
@@ -635,6 +694,26 @@ export function Whiteboard() {
         >
           Eraser on · tap for pen
         </button>
+      )}
+
+      {showKeys && !calibrating && (
+        <div
+          role="dialog"
+          aria-label="Keyboard shortcuts"
+          className="fixed bottom-6 left-6 z-50 rounded-2xl border border-neutral-200 bg-white/95 p-4 text-sm text-neutral-800 shadow-lg"
+        >
+          <p className="mb-2 font-semibold">Keys</p>
+          <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-1.5">
+            {KEYS.map(([key, what]) => (
+              <Fragment key={key}>
+                <dt>
+                  <kbd className="rounded-md border border-neutral-300 bg-neutral-50 px-2 py-0.5 font-mono text-xs">{key}</kbd>
+                </dt>
+                <dd>{what}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </div>
       )}
 
       {busEnabled && !calibrating && <CvStatus status={busStatus} />}
