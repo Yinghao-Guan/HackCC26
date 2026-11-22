@@ -4,6 +4,7 @@ import { useId, type ReactNode } from "react";
 import {
   BRIGHTNESS_LIMITS,
   BRIGHTNESS_PRESETS,
+  boardColor,
   COLORS,
   SIZE_LIMITS,
   sizeOf,
@@ -220,7 +221,11 @@ export function SettingsPanel({
 
       {sizedTool && (
         <PanelSection title="Size">
-          <div className="grid h-28 place-items-center overflow-hidden rounded-lg border border-neutral-200 bg-white">
+          <div
+            className="grid h-28 place-items-center overflow-hidden rounded-lg border border-neutral-200"
+            // The same gray as the board, so that light ink shows up in the preview.
+            style={{ backgroundColor: boardColor(boardBrightness) }}
+          >
             {sizedTool === "text" ? (
               <span
                 aria-hidden="true"

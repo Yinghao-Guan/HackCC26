@@ -9,8 +9,11 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import { BOARD_CHANNEL, isBoardMessage, type BoardMessage } from "@/lib/boardLink";
+import { calibrationFrom, type Calibration } from "./calibrate";
 import { createHandTracker, type Bone, type Hand, type HandTracker } from "./handTracker";
 import { luminanceAround, meanLuminance, paintDarkMask } from "./luma";
+import { Pen } from "./pen";
 import {
   DEFAULT_OTHERS_SHORTER,
   FINGER_NAMES,
@@ -63,6 +66,12 @@ const DEFAULT_SHADOW_RATIO = 0.75;
 const DEFAULT_HAND_MARGIN = 0.03;
 const DEFAULT_SKIN_TOLERANCE = 0.06;
 const DEFAULT_TOUCH_BELOW = 0.1;
+const DEFAULT_SMOOTHING = 1.5; // Hz: how steady the pen is held (lower is steadier but lags more)
+const CALIBRATION_KEY = "hackcc26.calibration";
+const CALIBRATION_HIDE_MS = 1200; // time for the whiteboard to take its markers down
+const CALIBRATION_SHOW_MS = 1500; // time for the whiteboard to put its markers up
+const CALIBRATION_FRAMES = 6; // frames averaged into each of the two calibration pictures
+const BOARD_ALIVE_MS = 2500; // the whiteboard is gone if it has not been heard from for this long
 const REFERENCE_FRAMES = 10; // frames averaged into the picture of the empty board
 const COUNTDOWN_MS = 3000; // time to take your hand away before the empty board is captured
 const TRACE_MS = 6000; // how much of the gap's history the trace shows
@@ -114,6 +123,28 @@ type ReferenceStatus =
   | { kind: "ready" }
   | { kind: "mismatch" };
 
+/** Where the calibration (which says where the whiteboard is in the camera picture) stands. */
+type CalibrationStatus =
+  | { kind: "none" }
+  | { kind: "running"; step: string }
+  | { kind: "failed"; reason: string }
+  | { kind: "ready"; error: number; markers: number; savedAt: string };
+
+/** The calibration, with when it was made. */
+type SavedCalibration = Calibration & { savedAt: string };
+
+/** The steps of a calibration: hide the markers, take a picture, show them, take another. */
+interface CalibrationJob {
+  phase: "hide" | "before" | "show" | "after";
+  /** When a waiting phase ends (performance.now()). */
+  until: number;
+  /** Frames added up for the picture being taken. */
+  sum: Float32Array | null;
+  count: number;
+  /** The picture without the markers, once it is taken. */
+  before: Float32Array | null;
+}
+
 /** One moment of the shadow touch reading, for the trace. */
 interface GapSample {
   t: number;
@@ -137,6 +168,11 @@ interface Readout {
   /** How much the camera's exposure has changed since the empty board was captured. */
   gain: number | null;
   reference: ReferenceStatus;
+  /** Is the hand writing: in the writing pose and touching the board (held for a few frames)? */
+  writing: boolean;
+  /** Is the whiteboard window open and answering? */
+  linked: boolean;
+  calibration: CalibrationStatus;
   /** What is happening with a snapshot being saved, if anything. */
   snapshot: string | null;
   fps: number;
@@ -161,6 +197,9 @@ const EMPTY_READOUT: Readout = {
   skinPixels: null,
   gain: null,
   reference: { kind: "none" },
+  writing: false,
+  linked: false,
+  calibration: { kind: "none" },
   snapshot: null,
   fps: 0,
   inferenceMs: null,
@@ -272,6 +311,36 @@ function saveSnapshot(args: {
     return fileName;
   } catch {
     return null;
+  }
+}
+
+// Browser storage can be missing or blocked, and the calibration can then simply be made again.
+function loadCalibration(): SavedCalibration | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(CALIBRATION_KEY) ?? "null");
+    if (typeof value !== "object" || value === null) return null;
+    const { matrix, error, markers, savedAt } = value as Record<string, unknown>;
+    if (
+      !Array.isArray(matrix) ||
+      matrix.length !== 9 ||
+      !matrix.every((entry) => typeof entry === "number" && Number.isFinite(entry)) ||
+      typeof error !== "number" ||
+      typeof markers !== "number" ||
+      typeof savedAt !== "string"
+    ) {
+      return null;
+    }
+    return { matrix, error, markers, savedAt };
+  } catch {
+    return null;
+  }
+}
+
+function saveCalibration(calibration: SavedCalibration) {
+  try {
+    localStorage.setItem(CALIBRATION_KEY, JSON.stringify(calibration));
+  } catch {
+    // Not remembering it is fine.
   }
 }
 
@@ -592,6 +661,8 @@ export function CameraTest() {
   const [handMargin, setHandMargin] = useState(DEFAULT_HAND_MARGIN);
   const [skinTolerance, setSkinTolerance] = useState(DEFAULT_SKIN_TOLERANCE);
   const [touchBelow, setTouchBelow] = useState(DEFAULT_TOUCH_BELOW);
+  const [sendToBoard, setSendToBoard] = useState(true);
+  const [smoothing, setSmoothing] = useState(DEFAULT_SMOOTHING);
   const [maskOn, setMaskOn] = useState(false);
   const [threshold, setThreshold] = useState(DEFAULT_DARK_THRESHOLD);
   const [hover, setHover] = useState<Spot | null>(null);
@@ -605,6 +676,7 @@ export function CameraTest() {
   const handMarginId = useId();
   const skinToleranceId = useId();
   const touchBelowId = useId();
+  const smoothingId = useId();
   const thresholdId = useId();
 
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -626,7 +698,16 @@ export function CameraTest() {
     handMargin: DEFAULT_HAND_MARGIN,
     skinTolerance: DEFAULT_SKIN_TOLERANCE,
     touchBelow: DEFAULT_TOUCH_BELOW,
+    sendToBoard: true,
+    smoothing: DEFAULT_SMOOTHING,
   });
+  // The channel to the whiteboard window (src/lib/boardLink.ts), and when it was last heard from.
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const boardRef = useRef<{ width: number; height: number; seen: number } | null>(null);
+  // Where the whiteboard is in the camera picture. Undefined until it is looked for in storage.
+  const calibrationRef = useRef<SavedCalibration | null | undefined>(undefined);
+  const calibrationJobRef = useRef<CalibrationJob | null>(null);
+  const calibrationFailureRef = useRef<string | null>(null);
   // The picture of the empty board that shadow is found against. It outlives camera restarts.
   const referenceRef = useRef<Reference | null>(null);
   // A snapshot that is counting down before it is saved.
@@ -785,6 +866,22 @@ export function CameraTest() {
   // Let go of the camera when leaving the page.
   useEffect(() => releaseCamera, [releaseCamera]);
 
+  // The link to the whiteboard window. It says every second that it is there, and how big it is.
+  useEffect(() => {
+    const channel = new BroadcastChannel(BOARD_CHANNEL);
+    channelRef.current = channel;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (isBoardMessage(message) && message.type === "alive") {
+        boardRef.current = { width: message.width, height: message.height, seen: performance.now() };
+      }
+    };
+    return () => {
+      channelRef.current = null;
+      channel.close();
+    };
+  }, []);
+
   useEffect(() => {
     optionsRef.current = {
       showHands,
@@ -796,6 +893,8 @@ export function CameraTest() {
       handMargin,
       skinTolerance,
       touchBelow,
+      sendToBoard,
+      smoothing,
     };
   }, [
     showHands,
@@ -807,6 +906,8 @@ export function CameraTest() {
     handMargin,
     skinTolerance,
     touchBelow,
+    sendToBoard,
+    smoothing,
   ]);
 
   // Copy the numbers into state a few times a second (state per video frame would be wasteful).
@@ -836,6 +937,7 @@ export function CameraTest() {
     const history: GapSample[] = [];
     const frameTimes: number[] = [];
     let touch: TouchState = { touching: false, streak: 0 };
+    const pen = new Pen();
     let maskImage: ImageData | null = null;
     let maskDrawn = false;
     let inferenceMs: number | null = null;
@@ -903,6 +1005,55 @@ export function CameraTest() {
           : reference.width === SAMPLE_WIDTH && reference.height === sampleHeight
             ? { kind: "ready" }
             : { kind: "mismatch" };
+      }
+
+      // Calibration: find where the whiteboard is in the picture. Take a picture without the
+      // whiteboard's markers, have it show them, take another, and compare.
+      const job = calibrationJobRef.current;
+      const sendMarkers = (show: boolean) => {
+        const message: BoardMessage = { type: "markers", show };
+        channelRef.current?.postMessage(message);
+      };
+      if (job) {
+        if (job.phase === "hide" || job.phase === "show") {
+          if (now >= job.until) {
+            job.phase = job.phase === "hide" ? "before" : "after";
+            job.sum = null;
+            job.count = 0;
+          }
+        } else {
+          if (!job.sum || job.sum.length !== luma.length) {
+            job.sum = new Float32Array(luma.length);
+            job.count = 0;
+          }
+          addFrame(job.sum, luma);
+          job.count++;
+          if (job.count >= CALIBRATION_FRAMES) {
+            const average = averageOf(job.sum, job.count);
+            job.sum = null;
+            job.count = 0;
+            if (job.phase === "before") {
+              job.before = average;
+              job.phase = "show";
+              job.until = now + CALIBRATION_SHOW_MS;
+              sendMarkers(true);
+            } else {
+              sendMarkers(false);
+              calibrationJobRef.current = null;
+              const result = job.before
+                ? calibrationFrom(job.before, average, SAMPLE_WIDTH, sampleHeight)
+                : null;
+              if (result?.ok) {
+                const saved: SavedCalibration = { ...result.calibration, savedAt: new Date().toISOString() };
+                calibrationRef.current = saved;
+                calibrationFailureRef.current = null;
+                saveCalibration(saved);
+              } else {
+                calibrationFailureRef.current = result ? result.reason : "The calibration did not start properly. Try again.";
+              }
+            }
+          }
+        }
       }
 
       // Hands, and whether the hand is in the writing pose.
@@ -1019,6 +1170,50 @@ export function CameraTest() {
       metrics.touching = touch.touching;
       metrics.shadowPixels = reading ? reading.shadowPixels : null;
       metrics.skinPixels = reading ? reading.skinPixels : null;
+
+      // The pen: where the fingertip is on the whiteboard, and whether it is writing. This goes to the
+      // whiteboard window, which draws with it and presses its buttons.
+      const board = boardRef.current;
+      const linked = board !== null && now - board.seen < BOARD_ALIVE_MS;
+      if (calibrationRef.current === undefined) calibrationRef.current = loadCalibration();
+      const calibration = calibrationRef.current;
+      if (primary) {
+        const result = pen.update({
+          time: now / 1000,
+          tip: { x: primary.hand[INDEX_TIP].x, y: primary.hand[INDEX_TIP].y },
+          pointing: primary.pointing,
+          touching: touch.touching,
+          target:
+            options.sendToBoard && linked && board && calibration && !calibrationJobRef.current
+              ? { calibration, width: board.width, height: board.height }
+              : null,
+          smoothing: options.smoothing,
+        });
+        metrics.writing = result.writing;
+        if (result.message) channelRef.current?.postMessage(result.message);
+      } else {
+        metrics.writing = false;
+        const lost = pen.lost();
+        if (lost) channelRef.current?.postMessage(lost);
+      }
+      metrics.linked = linked;
+      metrics.calibration = calibrationJobRef.current
+        ? {
+            kind: "running",
+            step:
+              calibrationJobRef.current.phase === "hide"
+                ? "Taking the markers down…"
+                : calibrationJobRef.current.phase === "before"
+                  ? "Taking a picture without markers…"
+                  : calibrationJobRef.current.phase === "show"
+                    ? "Putting the markers up…"
+                    : "Taking a picture with the markers…",
+          }
+        : calibrationFailureRef.current
+          ? { kind: "failed", reason: calibrationFailureRef.current }
+          : calibration
+            ? { kind: "ready", error: calibration.error, markers: calibration.markers, savedAt: calibration.savedAt }
+            : { kind: "none" };
       metrics.gain = reading ? reading.gain : null;
 
       if (paintLayer && maskImage) {
@@ -1083,6 +1278,9 @@ export function CameraTest() {
       overlayCtx.clearRect(0, 0, overlay.width, overlay.height);
       maskCtx.clearRect(0, 0, mask.width, mask.height);
       trace?.getContext("2d")?.clearRect(0, 0, trace.width, trace.height);
+      // Tell the whiteboard the hand is gone, so it does not keep a stroke or a button pressed.
+      const lost = pen.lost();
+      if (lost) channelRef.current?.postMessage(lost);
       metricsRef.current = { ...EMPTY_READOUT };
     };
   }, [live]);
@@ -1115,6 +1313,29 @@ export function CameraTest() {
   /** Take a picture of the empty board after a short countdown, so there is time to move the hand away. */
   const captureReference = () => {
     captureRef.current = { startAt: performance.now() + COUNTDOWN_MS, sum: null, count: 0 };
+  };
+
+  /** Find where the whiteboard is in the camera picture: the whiteboard shows its markers and the camera looks for them. */
+  const startCalibration = () => {
+    calibrationFailureRef.current = null;
+    calibrationJobRef.current = {
+      phase: "hide",
+      until: performance.now() + CALIBRATION_HIDE_MS,
+      sum: null,
+      count: 0,
+      before: null,
+    };
+    const message: BoardMessage = { type: "markers", show: false };
+    channelRef.current?.postMessage(message);
+  };
+
+  const handleSendToBoard = (send: boolean) => {
+    setSendToBoard(send);
+    // Turning it off must not leave a stroke or a button held down on the whiteboard.
+    if (!send) {
+      const message: BoardMessage = { type: "pointer-lost" };
+      channelRef.current?.postMessage(message);
+    }
   };
 
   /** Save a labelled snapshot after a short countdown, so there is time to put the finger in place. */
@@ -1151,7 +1372,7 @@ export function CameraTest() {
         : "bg-amber-100 text-amber-800";
 
   // Writing needs both: the hand in the writing pose, and the fingertip touching its shadow.
-  const writing = readout.pointing && readout.touching;
+  const writing = readout.writing;
   const referenceReady = readout.reference.kind === "ready";
   const touchText = !referenceReady
     ? "Capture the empty board first"
@@ -1300,6 +1521,75 @@ export function CameraTest() {
             </>
           )}
           {camera.kind === "error" && <p className="text-sm text-red-700">{camera.message}</p>}
+        </Section>
+
+        <Section title="Write on the whiteboard">
+          <dl className="flex flex-col gap-1.5">
+            <Row
+              label="Whiteboard window"
+              value={readout.linked ? "open" : "not found"}
+            />
+            <Row
+              label="Where it is in the picture"
+              value={
+                readout.calibration.kind === "ready"
+                  ? `calibrated (error ${(readout.calibration.error * 100).toFixed(2)}%)`
+                  : readout.calibration.kind === "running"
+                    ? "calibrating…"
+                    : "not calibrated"
+              }
+            />
+          </dl>
+          <button
+            type="button"
+            onClick={startCalibration}
+            disabled={!live || !readout.linked || readout.calibration.kind === "running"}
+            className={`${buttonClass} border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-700`}
+          >
+            Calibrate
+          </button>
+          {readout.calibration.kind === "running" && (
+            <p className="text-sm text-neutral-500">{readout.calibration.step} Keep your hand away.</p>
+          )}
+          {readout.calibration.kind === "failed" && (
+            <p className="text-sm text-red-700">{readout.calibration.reason}</p>
+          )}
+          {readout.calibration.kind === "ready" && (
+            <p className="text-sm text-neutral-500">
+              Calibrated with {readout.calibration.markers} markers on{" "}
+              {new Date(readout.calibration.savedAt).toLocaleString()}. It is remembered, but make
+              it again whenever the camera, the projector or the board is moved.
+            </p>
+          )}
+          <Toggle label="Send the finger to the whiteboard" checked={sendToBoard} onChange={handleSendToBoard} />
+          <div className="flex items-center justify-between text-sm">
+            <label htmlFor={smoothingId} className="font-medium">
+              Pen smoothing
+            </label>
+            <span className="tabular-nums text-neutral-500">{smoothing.toFixed(1)} Hz</span>
+          </div>
+          <input
+            id={smoothingId}
+            type="range"
+            min={0.3}
+            max={6}
+            step={0.1}
+            value={smoothing}
+            onChange={(e) => setSmoothing(Number(e.target.value))}
+            className="h-8 w-full cursor-pointer accent-neutral-900"
+          />
+          <p className="text-sm text-neutral-500">
+            Open the whiteboard (<code>/</code>) in a window on the projector, put this page on
+            your screen, and keep both visible (a window that is covered or minimized stops
+            working). Take your hand away, press Calibrate, and wait: the whiteboard shows nine
+            black squares and this page finds them. Also capture the empty board (Shadow touch,
+            below). Then point with one finger, and touch the board to write: the writing pose
+            (only the index finger out) and touching are both needed. A bright ring on the board
+            shows where the fingertip is. Touch a button and lift to press it, or touch a slider
+            and slide. A lower smoothing number holds the pen steadier but makes it lag. The
+            default pen is white, because black ink is as dark as a shadow and would be taken for
+            one.
+          </p>
         </Section>
 
         <Section title="Hand tracking">

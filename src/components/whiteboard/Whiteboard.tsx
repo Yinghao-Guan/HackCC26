@@ -8,12 +8,15 @@ import {
   useState,
   type WheelEvent,
 } from "react";
+import { BOARD_CHANNEL, isBoardMessage, type BoardMessage } from "@/lib/boardLink";
 import { requestCheck, requestGraph, requestSolve, type AiAction, type AiStatus } from "./ai";
 import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
+import { CalibrationMarkers } from "./CalibrationMarkers";
 import { CheckCard } from "./CheckCard";
-import { DrawingCanvas } from "./DrawingCanvas";
+import { DrawingCanvas, type DrawingCanvasHandle } from "./DrawingCanvas";
 import { exportInk } from "./exportInk";
+import { FingerUi } from "./fingerUi";
 import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
@@ -39,6 +42,9 @@ export function Whiteboard() {
   // Which part of the (endless) board is on screen: the board point at the top-left corner.
   const [view, setView] = useState<Point>(ORIGIN);
   const boardRef = useRef<HTMLElement>(null);
+  const canvasHandleRef = useRef<DrawingCanvasHandle>(null);
+  // The calibration markers are shown while the camera page works out where this window is.
+  const [showMarkers, setShowMarkers] = useState(false);
 
   // The text box being edited lives in state (so it renders) and in a ref (so
   // events that arrive out of order always see the latest value).
@@ -281,6 +287,53 @@ export function Whiteboard() {
   const graph = useCallback(() => runAi("graph"), [runAi]);
   const check = useCallback(() => runAi("check"), [runAi]);
 
+  // A finger seen by the camera page arrives over a channel (see src/lib/boardLink.ts). It writes on
+  // the board like a pen, and presses buttons and drags sliders like a finger on a touch screen.
+  useEffect(() => {
+    const channel = new BroadcastChannel(BOARD_CHANNEL);
+    const finger = new FingerUi();
+    const target = {
+      get canvas() {
+        return canvasHandleRef.current?.canvas() ?? null;
+      },
+      draw: (point: Point | null, down: boolean) => canvasHandleRef.current?.finger(point, down),
+    };
+
+    // If the camera page goes away while the markers are up, they must not stay up for good.
+    let markersTimer = 0;
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (!isBoardMessage(message)) return;
+
+      if (message.type === "markers") {
+        window.clearTimeout(markersTimer);
+        setShowMarkers(message.show);
+        if (message.show) markersTimer = window.setTimeout(() => setShowMarkers(false), 15_000);
+      } else if (message.type === "pointer") {
+        finger.update(message.x * window.innerWidth, message.y * window.innerHeight, message.writing, target);
+      } else if (message.type === "pointer-lost") {
+        finger.lost(target);
+      }
+    };
+
+    // Tell the camera page that this window is here, and how big it is.
+    const announce = () => {
+      const alive: BoardMessage = { type: "alive", width: window.innerWidth, height: window.innerHeight };
+      channel.postMessage(alive);
+    };
+    announce();
+    const timer = window.setInterval(announce, 1000);
+    window.addEventListener("resize", announce);
+
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(markersTimer);
+      window.removeEventListener("resize", announce);
+      finger.lost(target);
+      channel.close();
+    };
+  }, []);
+
   // Ctrl/Cmd+Z undoes the last change to the board.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -299,6 +352,8 @@ export function Whiteboard() {
     <div className="flex h-dvh w-full overflow-hidden">
       <h1 className="sr-only">HackCC26 whiteboard</h1>
 
+      {showMarkers && <CalibrationMarkers />}
+
       <main
         ref={boardRef}
         onWheel={handleWheel}
@@ -315,6 +370,7 @@ export function Whiteboard() {
         }}
       >
         <DrawingCanvas
+          ref={canvasHandleRef}
           strokes={board.strokes}
           tool={settings.tool}
           eraserMode={settings.eraserMode}

@@ -24,7 +24,7 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 ## Whiteboard tools
 
-- **Pen**: draw with the mouse (or a finger or stylus).
+- **Pen**: draw with the mouse (or a finger or stylus), or with a finger seen by the camera (see *Writing with a finger*). The default color is white, for the projected gray board.
 - **Eraser**: *Pixel* rubs out part of a stroke; *Stroke* removes a whole stroke or text box with one touch.
 - **Text**: click the board and type. Enter adds a line; Esc or clicking away finishes. Click text to edit it. Typed text is part of the board, so it can be erased, undone, and read by the AI.
 - **Move**: drag the board to move around. The mouse wheel or trackpad scrolls it too, and so does dragging with the middle mouse button. The board is endless; **Reset view** goes back to the start. **Solve** reads only what is on screen.
@@ -55,7 +55,17 @@ Open [http://localhost:3000/camera-test](http://localhost:3000/camera-test) on t
 - **Shadow touch**: whether the fingertip touches the board, from its shadow. The projector lights the board, so the hand casts a shadow; the higher the finger, the farther the shadow is from the fingertip, and at contact they meet. Press **Capture empty board** with your hand away to take a reference picture, then `src/components/camera/shadowTouch.ts` marks every pixel clearly darker than the reference (and outside the hand's outline) as shadow. It then measures how far the shadow reaches past the fingertip along the finger, inside a box laid along the finger, in hand sizes so it means the same near and far. When the finger is above the board, the shadow's tip shows up ahead of the fingertip. When the finger touches, it hides its own shadow, so the shadow stops at the fingertip or behind it and the reading is 0. (Measuring the distance to the shadow's far tip, or to the nearest shadow, does not work: when the finger touches, what is left is a bump of the hand's shadow at the knuckle, far behind the fingertip, which looks like a tip; and the shadow of the arm lies close to the fingertip even when the finger is high.) This assumes the light comes from behind the hand, so that the shadow falls ahead of the fingertip when it is above the board. The hand is hidden from the shadow search finger by finger (a thin line along each finger, the palm and the forearm), because one shape around the whole hand also covers the lit board between the fingers. The edge of the skin is then found by color: the skin color is read from the index finger on every frame, and dark pixels of that color are set aside as the hand (orange on the page) instead of being taken for shadow, because a shadow is more gray than skin. A shadow only counts as touching if it lies against the hand: with no shadow near the hand, or shadow somewhere else, as with a hand far above the board, the reading is empty and it is not a touch. The page paints the shadow it found cyan, draws the box, a line across the finger at the fingertip and a line to the far end of the shadow, and plots the reading over the last 6 seconds next to the touch thresholds. **Save touching snapshot** and **Save hovering snapshot** save the camera picture, the empty board and the hand's landmarks as a JSON file in the Downloads folder, so the detection can be tuned on real frames. A touch needs the gap below a threshold for two frames in a row, with a higher threshold for letting go. **Writing** is shown only when the hand is in the 👆 pose *and* touching. The thresholds have not been tuned on a real camera yet. Projected ink is as dark as a shadow, so it would count as shadow if it appeared after the reference was taken.
 - **Brightness probe**: hover over the picture to read the brightness under the pointer, click to pin a spot, and read the difference between the board and the finger's shadow. Dark areas can be painted red above a brightness you choose.
 
-The pose check and the shadow touch are not connected to the whiteboard yet: the whiteboard still takes mouse input only.
+## Writing with a finger
+
+The camera page and the whiteboard are two pages of the same browser, and the camera page sends the finger to the whiteboard over a `BroadcastChannel` (`src/lib/boardLink.ts`; no server). To write:
+
+1. Open the whiteboard (`/`) in a window on the projector, and the camera page (`/camera-test`) on your screen, in the same browser. Keep both visible: a window that is covered or minimized stops working.
+2. On the camera page, start the camera, take your hand away, and press **Calibrate**. The whiteboard shows nine black squares, the camera page finds them in the camera picture (`src/components/camera/calibrate.ts`), and a homography fitted to them (`homography.ts`) turns a point in the camera picture into a position in the whiteboard window. The result is remembered; make it again whenever the camera, the projector or the board is moved. This is the manual-calibration fallback of the design docs; automatic calibration with ArUco markers can replace it later by producing the same matrix.
+3. Capture the empty board (Shadow touch, above).
+4. Point with one finger and touch the board. The fingertip is smoothed with a One Euro filter (`oneEuro.ts`; the **Pen smoothing** slider sets how steady it is) and sent to the whiteboard, where a bright ring shows where it is. With the hand in the 👆 pose *and* touching, it draws, erases or moves the board like the mouse does, with the tool and color chosen in the settings panel. A pose held for two frames counts, and one lost for three frames ends the line (`pen.ts`).
+5. The same finger presses buttons and drags sliders (`src/components/whiteboard/fingerUi.ts`): touch a button (it is outlined) and lift to press it, or slide off it to cancel; touch a slider and slide along it. Where a touch lands decides what it does: on the board it draws, on a button it presses, on a slider it drags.
+
+The default pen is **white** on the gray board. Black ink is as dark as a shadow, so it would be taken for one and touching would stay on after the finger lifts. The image sent to the AI is always drawn in dark ink (`exportInk.ts`), so white writing is still read.
 
 ## Scripts
 
@@ -75,7 +85,8 @@ src/app/api/graph/          Server route: reads the board image and lists the cu
 src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
 src/app/camera-test/        Page for trying a camera setup
 src/components/whiteboard/  Drawing canvas, stroke model, settings panel, answer, graph (2D and 3D) and check cards
-src/components/camera/      Camera test page, hand tracking, writing pose, brightness and stability measurements
+src/components/camera/      Camera test page, hand tracking, writing pose, shadow touch, calibration and the pen
+src/lib/boardLink.ts        The messages between the camera page and the whiteboard
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```

@@ -8,6 +8,19 @@ const MAX_UPSCALE = 2; // never blow small writing up by more than this
 const ALPHA_THRESHOLD = 16; // a pixel counts as ink above this opacity (0-255)
 const MIN_LINE_GAP = 10; // an empty band this tall (in board pixels) separates two lines
 
+/**
+ * The color to draw a mark in for the image the AI reads, which is on white. Light ink
+ * (made for the projected gray board) would vanish there, so it is drawn dark.
+ */
+function inkForAi(color: string): string {
+  const match = /^#([0-9a-f]{6})$/i.exec(color);
+  if (!match) return color;
+  const value = parseInt(match[1], 16);
+  const brightness =
+    0.2126 * ((value >> 16) & 255) + 0.7152 * ((value >> 8) & 255) + 0.0722 * (value & 255);
+  return brightness > 170 ? "#171717" : color;
+}
+
 export interface InkImage {
   /** The ink on a white background, cropped to the writing, as a PNG data URL. */
   dataUrl: string;
@@ -78,7 +91,8 @@ export function exportInk(
   if (!ctx) return null;
   ctx.setTransform(scale, 0, 0, scale, -minX * scale, -minY * scale);
   for (const stroke of strokes) {
-    if (stroke.tool === "eraser" || included.has(stroke)) paintStroke(ctx, stroke);
+    if (stroke.tool === "eraser") paintStroke(ctx, stroke);
+    else if (included.has(stroke)) paintStroke(ctx, { ...stroke, color: inkForAi(stroke.color) });
   }
 
   // Erasing can leave empty margins, so find where ink actually remains, row by row.

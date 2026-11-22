@@ -3,9 +3,11 @@
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   type PointerEvent as ReactPointerEvent,
+  type Ref,
 } from "react";
 import type { EraserMode, Tool } from "./settings";
 import {
@@ -37,7 +39,22 @@ interface DrawingCanvasProps {
   onTextClick: (point: Point, target: Stroke | null) => void;
   /** The board was dragged: move the view by this many screen pixels. */
   onPan: (dx: number, dy: number) => void;
+  ref?: Ref<DrawingCanvasHandle>;
 }
+
+/** What the board's owner can ask of the canvas. */
+export interface DrawingCanvasHandle {
+  /**
+   * A finger seen by the camera: where its tip is on the canvas (in screen pixels,
+   * relative to the canvas), or null if it is gone, and whether it is touching the board.
+   */
+  finger: (point: Point | null, down: boolean) => void;
+  /** The canvas element, to tell what is under a point. */
+  canvas: () => HTMLCanvasElement | null;
+}
+
+/** The pointer id used for the gesture of a finger seen by the camera: real pointers have ids of 0 or more. */
+const FINGER = -1;
 
 /** What the active pointer is doing between pointer down and pointer up. */
 type Gesture =
@@ -54,16 +71,6 @@ function screenPoint(
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
-/** Where a pointer event is on the board, which may be scrolled. */
-function boardPoint(
-  canvas: HTMLCanvasElement,
-  event: { clientX: number; clientY: number },
-  view: Point,
-): Point {
-  const p = screenPoint(canvas, event);
-  return { x: p.x + view.x, y: p.y + view.y };
-}
-
 export function DrawingCanvas({
   strokes,
   tool,
@@ -76,9 +83,11 @@ export function DrawingCanvas({
   onStrokesErase,
   onTextClick,
   onPan,
+  ref,
 }: DrawingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const eraserCursorRef = useRef<HTMLDivElement>(null);
+  const fingerDotRef = useRef<HTMLDivElement>(null);
   const strokesRef = useRef(strokes);
   const viewRef = useRef(view);
   const hiddenIdRef = useRef(hiddenId);
@@ -183,112 +192,164 @@ export function DrawingCanvas({
     return changed;
   };
 
-  const handlePointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  /**
+   * Start a gesture at a point on the canvas (in screen pixels). `capture` is for
+   * real pointers only: it asks the browser to keep sending their events here.
+   */
+  const beginGesture = (
+    pointerId: number,
+    screen: Point,
+    options: { middleButton?: boolean; capture?: () => void } = {},
+  ) => {
     if (gestureRef.current) return; // one gesture at a time
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-    // Left button draws; the middle mouse button always moves the board.
-    const middleButton = e.pointerType === "mouse" && e.button === 1;
-    if (e.button !== 0 && !middleButton) return;
-
-    const canvas = e.currentTarget;
-
-    if (tool === "move" || middleButton) {
-      e.preventDefault(); // no autoscroll on middle click
-      canvas.setPointerCapture(e.pointerId);
-      gestureRef.current = {
-        kind: "pan",
-        pointerId: e.pointerId,
-        lastX: e.clientX,
-        lastY: e.clientY,
-      };
+    if (tool === "move" || options.middleButton) {
+      options.capture?.();
+      gestureRef.current = { kind: "pan", pointerId, lastX: screen.x, lastY: screen.y };
       canvas.style.cursor = "grabbing";
       return;
     }
 
-    const point = boardPoint(canvas, e, viewRef.current);
+    const point = { x: screen.x + viewRef.current.x, y: screen.y + viewRef.current.y };
 
     if (tool === "text") {
-      // Don't let this click move focus away from the text box it opens.
-      e.preventDefault();
       onTextClick(point, findTextAt(strokesRef.current, point));
       return;
     }
 
-    canvas.setPointerCapture(e.pointerId);
+    options.capture?.();
 
     if (tool === "eraser" && eraserMode === "stroke") {
-      const gesture: Gesture = {
-        kind: "erase",
-        pointerId: e.pointerId,
-        last: point,
-        erased: new Set(),
-      };
+      const gesture: Gesture = { kind: "erase", pointerId, last: point, erased: new Set() };
       gestureRef.current = gesture;
       if (eraseAlong(gesture, point, size / 2)) redraw();
       return;
     }
 
     const stroke: StrokeDraft = { tool, color, size, points: [point] };
-    gestureRef.current = { kind: "draw", pointerId: e.pointerId, stroke };
+    gestureRef.current = { kind: "draw", pointerId, stroke };
 
     const ctx = canvas.getContext("2d");
     if (ctx) paintStrokeTail(ctx, stroke);
   };
 
-  const handlePointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
-    const canvas = e.currentTarget;
-    if (tool === "eraser") moveEraserCursor(screenPoint(canvas, e));
-
+  /** Carry on a pointer's gesture through some new points on the canvas (in screen pixels). */
+  const continueGesture = (pointerId: number, screens: Point[]) => {
     const gesture = gestureRef.current;
-    if (!gesture || gesture.pointerId !== e.pointerId) return;
+    const canvas = canvasRef.current;
+    if (!gesture || !canvas || gesture.pointerId !== pointerId || screens.length === 0) return;
 
     if (gesture.kind === "pan") {
+      const last = screens[screens.length - 1];
       // Dragging the board right shows what is to the left, so the view moves the other way.
-      onPan(gesture.lastX - e.clientX, gesture.lastY - e.clientY);
-      gesture.lastX = e.clientX;
-      gesture.lastY = e.clientY;
+      onPan(gesture.lastX - last.x, gesture.lastY - last.y);
+      gesture.lastX = last.x;
+      gesture.lastY = last.y;
       return;
     }
 
-    // Browsers batch fast movement into one event; use every sample so quick
-    // strokes stay smooth.
-    const coalesced = e.nativeEvent.getCoalescedEvents?.() ?? [];
-    const samples = coalesced.length > 0 ? coalesced : [e.nativeEvent];
-    const currentView = viewRef.current;
+    const { x: viewX, y: viewY } = viewRef.current;
+    const points = screens.map((screen) => ({ x: screen.x + viewX, y: screen.y + viewY }));
 
     if (gesture.kind === "draw") {
       const ctx = canvas.getContext("2d");
-      for (const sample of samples) {
-        gesture.stroke.points.push(boardPoint(canvas, sample, currentView));
+      for (const point of points) {
+        gesture.stroke.points.push(point);
         if (ctx) paintStrokeTail(ctx, gesture.stroke);
       }
     } else {
       let changed = false;
-      for (const sample of samples) {
-        if (eraseAlong(gesture, boardPoint(canvas, sample, currentView), size / 2)) {
-          changed = true;
-        }
+      for (const point of points) {
+        if (eraseAlong(gesture, point, size / 2)) changed = true;
       }
       if (changed) redraw();
     }
   };
 
-  const finishGesture = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  /** End a pointer's gesture: a stroke is finished, or what the eraser touched is removed. */
+  const endGesture = (pointerId: number) => {
     const gesture = gestureRef.current;
-    if (!gesture || gesture.pointerId !== e.pointerId) return;
+    if (!gesture || gesture.pointerId !== pointerId) return;
 
     gestureRef.current = null;
     if (gesture.kind === "draw") {
       onStrokeComplete(gesture.stroke);
     } else if (gesture.kind === "erase" && gesture.erased.size > 0) {
       onStrokesErase([...gesture.erased]);
-    } else if (gesture.kind === "pan") {
-      e.currentTarget.style.cursor = ""; // back to the tool's own cursor
+    } else if (gesture.kind === "pan" && canvasRef.current) {
+      canvasRef.current.style.cursor = ""; // back to the tool's own cursor
     }
+  };
+
+  const handlePointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    // Left button draws; the middle mouse button always moves the board.
+    const middleButton = e.pointerType === "mouse" && e.button === 1;
+    if (e.button !== 0 && !middleButton) return;
+
+    // No autoscroll on middle click, and a click for text must not move focus away from the text box it opens.
+    if (tool === "move" || middleButton || tool === "text") e.preventDefault();
+
+    const canvas = e.currentTarget;
+    beginGesture(e.pointerId, screenPoint(canvas, e), {
+      middleButton,
+      capture: () => canvas.setPointerCapture(e.pointerId),
+    });
+  };
+
+  const handlePointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    const canvas = e.currentTarget;
+    if (tool === "eraser") moveEraserCursor(screenPoint(canvas, e));
+
+    // Browsers batch fast movement into one event; use every sample so quick
+    // strokes stay smooth.
+    const coalesced = e.nativeEvent.getCoalescedEvents?.() ?? [];
+    const samples = coalesced.length > 0 ? coalesced : [e.nativeEvent];
+    continueGesture(
+      e.pointerId,
+      samples.map((sample) => screenPoint(canvas, sample)),
+    );
+  };
+
+  const finishGesture = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    endGesture(e.pointerId);
 
     // A finger has no hover, so the circle should not linger after a touch.
     if (e.pointerType === "touch") hideEraserCursor();
   };
+
+  /**
+   * A finger seen by the camera, as a pen: `point` is where its tip is on the
+   * canvas (in screen pixels), or null if it is gone, and `down` is whether it
+   * is touching the board. It draws, erases and moves the board like the mouse does,
+   * and a bright dot shows where it is when it is not erasing.
+   */
+  const finger = (point: Point | null, down: boolean) => {
+    const dot = fingerDotRef.current;
+    if (!point) {
+      endGesture(FINGER);
+      hideEraserCursor();
+      if (dot) dot.style.visibility = "hidden";
+      return;
+    }
+
+    if (tool === "eraser") {
+      moveEraserCursor(point);
+      if (dot) dot.style.visibility = "hidden";
+    } else if (dot) {
+      dot.style.transform = `translate(${point.x}px, ${point.y}px) translate(-50%, -50%)`;
+      dot.style.visibility = "visible";
+      dot.dataset.down = down ? "true" : "false";
+    }
+
+    const ours = gestureRef.current?.pointerId === FINGER;
+    if (down && !ours) beginGesture(FINGER, point);
+    else if (down && ours) continueGesture(FINGER, [point]);
+    else if (!down && ours) endGesture(FINGER);
+  };
+
+  useImperativeHandle(ref, () => ({ finger, canvas: () => canvasRef.current }));
 
   const cursorClass =
     tool === "eraser"
@@ -312,6 +373,14 @@ export function DrawingCanvas({
         onPointerUp={finishGesture}
         onPointerCancel={finishGesture}
         onPointerLeave={hideEraserCursor}
+      />
+
+      {/* Where the finger is, as a bright ring (filled while it writes). Bright, so it is never taken for a shadow. */}
+      <div
+        ref={fingerDotRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute left-0 top-0 size-6 rounded-full border-[3px] border-white data-[down=true]:bg-white"
+        style={{ visibility: "hidden" }}
       />
 
       {tool === "eraser" && (

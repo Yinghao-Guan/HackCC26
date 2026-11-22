@@ -26,7 +26,12 @@ export interface WhiteboardSettings {
   boardBrightness: number;
 }
 
+// White comes first and is the default: on the projected gray board, ink that is
+// lighter than the board cannot be mistaken for the finger's shadow, which is darker
+// than the board. Black ink is as dark as a shadow, so it confuses finger writing.
+// (The image the AI reads is always drawn dark: see exportInk.ts.)
 export const COLORS = [
+  { name: "White", value: "#ffffff" },
   { name: "Black", value: "#171717" },
   { name: "Blue", value: "#2563eb" },
   { name: "Red", value: "#dc2626" },
