@@ -7,9 +7,11 @@ import logging
 import math
 from typing import Any, Protocol
 
+from .aruco import detect_markers, make_detector
 from .auto_calibration import run_auto_calibration
 from .board_reader import run_board_read
 from .calibration import Calibration, manual_targets
+from .drift import StaticMarker, static_markers_in
 from .events import (
     CalibrateAuto,
     CancelCalibration,
@@ -119,9 +121,11 @@ async def _calibrate_manually(message: ManualCalibration, client: Sender, state:
             await state.refuse_calibration(str(error))
             return
 
+        statics = await asyncio.to_thread(_printed_markers_now, state)
         await state.adopt_calibration(
             Calibration.from_matrix(
                 matrix,
+                static_markers=statics,
                 method="manual",
                 camera_size=camera_size,
                 board_size=(board.width, board.height),
@@ -129,6 +133,12 @@ async def _calibrate_manually(message: ManualCalibration, client: Sender, state:
                 points=len(targets),
             )
         )
+
+
+def _printed_markers_now(state: ServerState) -> list[StaticMarker]:
+    """Where the printed markers are in the current camera frame (for drift checks)."""
+    frame = state.camera.latest() if state.camera is not None else None
+    return [] if frame is None else static_markers_in(detect_markers(frame.image, make_detector()))
 
 
 def _near_board(point: tuple[float, float], board_size: tuple[float, float]) -> bool:
