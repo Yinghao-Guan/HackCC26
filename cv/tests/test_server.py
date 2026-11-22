@@ -70,6 +70,14 @@ def test_connections_from_other_websites_are_refused():
         ws.receive_json()
 
 
+def test_the_services_own_pages_are_allowed_on_any_port():
+    with (
+        make_client(port=9100) as client,
+        client.websocket_connect("ws://127.0.0.1:8765/ws", headers={"origin": "http://127.0.0.1:9100"}) as ws,
+    ):
+        read_greeting(ws)
+
+
 def test_connections_without_an_origin_are_allowed_for_local_tools():
     with make_client() as client, client.websocket_connect("ws://127.0.0.1:8765/ws") as ws:
         read_greeting(ws)
@@ -87,6 +95,14 @@ def test_root_redirects_to_the_debug_page():
         response = client.get("/", follow_redirects=False)
     assert response.status_code in (302, 307)
     assert response.headers["location"] == "/debug"
+
+
+def test_gesture_lab_page_is_served_and_joins_as_an_operator():
+    with make_client() as client:
+        response = client.get("/gestures")
+    assert response.status_code == 200
+    assert "Gesture Lab" in response.text
+    assert 'role: "operator"' in response.text  # must not change the board size
 
 
 def test_debug_page_is_served():
