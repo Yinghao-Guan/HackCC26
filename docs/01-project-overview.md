@@ -1,6 +1,6 @@
 # 01 · Project Overview
 
-_Working title: Projected Interactive Whiteboard. Last updated: 2026-10-27._
+_Project name: WiseBoard (working title: Projected Interactive Whiteboard). Last updated: 2026-11-22._
 
 ## 1. One-liner
 

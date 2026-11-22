@@ -7,7 +7,7 @@
 // 1 is its right or bottom edge. The camera page does not need to know the window's
 // size in pixels, and positions outside 0 to 1 are simply outside the window.
 
-export const BOARD_CHANNEL = "hackcc26-board";
+export const BOARD_CHANNEL = "wiseboard-board";
 
 /** Where the calibration markers sit, as shares of the window's width and height. */
 export const MARKER_SHARES = [0.1, 0.5, 0.9] as const;

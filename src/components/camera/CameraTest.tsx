@@ -93,7 +93,9 @@ const DEFAULT_HAND_MARGIN = 0.03;
 const DEFAULT_SKIN_TOLERANCE = 0.06;
 const DEFAULT_TOUCH_BELOW = 0.1;
 const DEFAULT_SMOOTHING = 1.5; // Hz: how steady the pen is held (lower is steadier but lags more)
-const CALIBRATION_KEY = "hackcc26.calibration";
+const CALIBRATION_KEY = "wiseboard.calibration";
+// Where a calibration was saved before the project was named WiseBoard; still read, so it is not lost.
+const OLD_CALIBRATION_KEY = "hackcc26.calibration";
 const CALIBRATION_HIDE_MS = 2000; // time for the whiteboard to turn white, and the camera's exposure to settle
 const CALIBRATION_SHOW_MS = 1500; // time for the whiteboard to put its markers up
 const CALIBRATION_SHOW_FOUND_MS = 10_000; // how long the markers found stay circled on the picture
@@ -113,7 +115,8 @@ const REFERENCE_FRAMES = 10; // frames averaged into the picture of the empty bo
 const COUNTDOWN_MS = 3000; // time to take your hand away before the empty board is captured
 const TRACE_MS = 6000; // how much of the gap's history the trace shows
 const TRACE_MAX_GAP = 1.5;
-const LAST_CAMERA_KEY = "hackcc26.camera";
+const LAST_CAMERA_KEY = "wiseboard.camera";
+const OLD_LAST_CAMERA_KEY = "hackcc26.camera"; // as for OLD_CALIBRATION_KEY
 // The capped pen: a cap missing for fewer frames than this is held where it was, so one bad frame does not drop a press.
 const CAP_LOST_FRAMES = 4;
 // A cap that has lain still with no hand in view this long is put down, not held: it may become part of the empty board.
@@ -408,7 +411,7 @@ function saveSnapshot(args: {
     };
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const fileName = `hackcc26-snapshot-${args.label}-${stamp}.json`;
+    const fileName = `wiseboard-snapshot-${args.label}-${stamp}.json`;
     const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -424,7 +427,7 @@ function saveSnapshot(args: {
 // Browser storage can be missing or blocked, and the calibration can then simply be made again.
 function loadCalibration(): SavedCalibration | null {
   try {
-    const value: unknown = JSON.parse(localStorage.getItem(CALIBRATION_KEY) ?? "null");
+    const value: unknown = JSON.parse(localStorage.getItem(CALIBRATION_KEY) ?? localStorage.getItem(OLD_CALIBRATION_KEY) ?? "null");
     if (typeof value !== "object" || value === null) return null;
     const { matrix, error, markers, savedAt } = value as Record<string, unknown>;
     if (
@@ -476,7 +479,7 @@ function describeCapabilities(track: MediaStreamTrack): string {
 // Browser storage can be missing or blocked, and nothing here depends on it.
 function recallCamera(): string {
   try {
-    return localStorage.getItem(LAST_CAMERA_KEY) ?? "";
+    return localStorage.getItem(LAST_CAMERA_KEY) ?? localStorage.getItem(OLD_LAST_CAMERA_KEY) ?? "";
   } catch {
     return "";
   }

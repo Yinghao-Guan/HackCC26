@@ -1,6 +1,6 @@
-# HackCC26
+# WiseBoard
 
-A projected, interactive, AI-assisted whiteboard, built for HackCC 2026 (Education). Any whiteboard, a projector and a phone camera become a smart board you can write on with a finger and talk to.
+A projected, interactive, AI-assisted whiteboard, built for HackCC 2026 (Education). Any whiteboard, a projector and a phone camera become a smart board: write on it with an ordinary marker, point and press with a finger or a capped marker, and talk to it.
 
 Project docs (overview, technical design, team roles, hardware, checklist) are in [`docs/`](docs/).
 

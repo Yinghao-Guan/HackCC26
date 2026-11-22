@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "HackCC26 Whiteboard",
+  title: "WiseBoard",
   description: "A projected, interactive, AI-assisted whiteboard.",
 };
 

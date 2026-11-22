@@ -567,7 +567,7 @@ export function Whiteboard() {
 
   return (
     <div className="relative h-dvh w-full overflow-hidden">
-      <h1 className="sr-only">HackCC26 whiteboard</h1>
+      <h1 className="sr-only">WiseBoard</h1>
 
       <main
         ref={boardRef}

@@ -174,7 +174,7 @@ def create_app(
         f"http://{host}:{config.port}" for host in ("127.0.0.1", "localhost", config.host)
     }
 
-    app = FastAPI(title="HackCC26 CV service", version=__version__, lifespan=lifespan)
+    app = FastAPI(title="WiseBoard CV service", version=__version__, lifespan=lifespan)
     # Only answer requests addressed to this machine by name. Without this, a web page
     # could point its own domain at 127.0.0.1 (DNS rebinding) and read the camera preview.
     app.add_middleware(
