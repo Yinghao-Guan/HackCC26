@@ -23,7 +23,7 @@ def camera_factory(opened: bool):
 
 
 def make_client(opened: bool) -> TestClient:
-    config = Config(camera_enabled=True, warmup_seconds=0.0, data_dir=Path(tempfile.mkdtemp()))
+    config = Config(camera_enabled=True, warmup_seconds=0.0, gestures=False, data_dir=Path(tempfile.mkdtemp()))
     return TestClient(create_app(config, camera_factory=camera_factory(opened)), base_url="http://127.0.0.1:8765")
 
 
