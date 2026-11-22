@@ -310,7 +310,7 @@ export function skinModelFrom(colors: Pixels, hand: Point[]): SkinModel | null {
 }
 
 /** Is this pixel the color of skin? A tolerance of 0 says no to everything (the skin test is off). */
-function isSkin(colors: Pixels, index: number, skin: SkinModel, tolerance: number): boolean {
+export function isSkin(colors: Pixels, index: number, skin: SkinModel, tolerance: number): boolean {
   if (tolerance <= 0) return false;
   const r = colors.data[index * 4];
   const g = colors.data[index * 4 + 1];

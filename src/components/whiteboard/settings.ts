@@ -29,14 +29,14 @@ export interface WhiteboardSettings {
 // White comes first and is the default: on the projected gray board, ink that is
 // lighter than the board cannot be mistaken for the finger's shadow, which is darker
 // than the board. Black ink is as dark as a shadow, so it confuses finger writing.
-// (The image the AI reads is always drawn dark: see exportInk.ts.)
+// (The image the AI reads is always drawn dark: see exportInk.ts.) Only white, gray
+// and black: the camera finds the capped marker that presses the buttons by its blue
+// cap, so the projected board shows no color at all. (A dark gray would vanish on the
+// gray board, so the gray is a light one.)
 export const COLORS = [
   { name: "White", value: "#ffffff" },
+  { name: "Light gray", value: "#c4c4c4" },
   { name: "Black", value: "#171717" },
-  { name: "Blue", value: "#2563eb" },
-  { name: "Red", value: "#dc2626" },
-  { name: "Green", value: "#16a34a" },
-  { name: "Orange", value: "#ea580c" },
 ] as const;
 
 export const SIZE_LIMITS = {
@@ -47,11 +47,10 @@ export const SIZE_LIMITS = {
 
 // A white board makes the projector glare. A black one removes the glare but also
 // the finger's shadow, which touch detection needs (docs/02-technical-design.md,
-// section 4). A gray board is in between, so its level can be tuned on site.
-// Tested with the real projector: the glare only becomes acceptable at about 40% or
-// lower, and 35% works well, so that is the default.
+// section 4). A gray board is in between. Tested with the real projector: the glare
+// only becomes acceptable at about 40% or lower, and 35% works well, so the board is
+// fixed at 35% (the panel has no control for it; change `boardBrightness` below).
 export const BRIGHTNESS_LIMITS = { min: 30, max: 100 } as const;
-export const BRIGHTNESS_PRESETS = [100, 60, 40, 35] as const;
 
 /** The board's background color for a brightness percent (100 is white). */
 export function boardColor(brightness: number): string {

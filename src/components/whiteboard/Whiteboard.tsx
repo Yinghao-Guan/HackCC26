@@ -480,11 +480,15 @@ export function Whiteboard() {
 
       {calibrationScreen !== "off" && <CalibrationMarkers screen={calibrationScreen} />}
 
-      {/* Where the camera sees the pointer: a light ring (filled while touching), light so it is never taken for a shadow. */}
+      {/*
+        Where the camera sees the pointer: a wide ring around it, thin and faint while it hovers, thick and
+        solid white while it touches. It is light, so it is never taken for a shadow, and hollow and wide, so no colored light
+        falls on the tip of a pen cap, whose color the camera looks for.
+      */}
       <div
         ref={ringRef}
         aria-hidden="true"
-        className="pointer-events-none fixed left-0 top-0 z-40 size-8 rounded-full border-[3px] border-amber-300 data-[touching=true]:bg-amber-200/70"
+        className="pointer-events-none fixed left-0 top-0 z-40 size-20 rounded-full border-[3px] border-white/60 data-[touching=true]:border-[6px] data-[touching=true]:border-white"
         style={{ visibility: "hidden" }}
       />
 

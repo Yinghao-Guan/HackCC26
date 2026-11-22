@@ -5,8 +5,13 @@ import { tryCompileFormula } from "@/lib/expression";
 import type { GraphCurve, GraphWindow } from "@/lib/graph";
 import { explicitPath, formatTick, implicitPath, niceStep, tickValues } from "@/lib/plot";
 
-/** One color per curve, in order. The legend uses the same list. */
-export const CURVE_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#ea580c", "#9333ea", "#0d9488"];
+/**
+ * One color per curve, in order. The legend and the 3D surfaces use the same list.
+ * Only grays: the projected board shows no color, so the camera can find the blue cap
+ * of the marker that presses the buttons. Dark enough to read on the white card, and
+ * light enough that a 3D surface does not shade to black.
+ */
+export const CURVE_COLORS = ["#404040", "#8a8a8a", "#b5b5b5", "#5c5c5c", "#9e9e9e", "#2b2b2b"];
 
 const GRID_COLOR = "#e5e5e5";
 const AXIS_COLOR = "#525252";

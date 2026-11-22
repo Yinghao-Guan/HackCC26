@@ -33,6 +33,6 @@ body {
   finger would look like its shadow to the touch detection.
 */
 [data-finger="clicked"] {
-  outline: 4px solid #16a34a;
+  outline: 4px solid #171717;
   outline-offset: 3px;
 }

@@ -17,7 +17,7 @@ export function AnswerCard({ card, onDismiss }: AnswerCardProps) {
     // The card lets pointer events through, so you can keep writing around and
     // over it. Only the dismiss button takes clicks.
     <div
-      className="pointer-events-none absolute rounded-2xl border-2 border-emerald-500 bg-white/95 p-5 shadow-lg"
+      className="pointer-events-none absolute rounded-2xl border-2 border-neutral-900 bg-white/95 p-5 shadow-lg"
       // Grows with long formulas, up to a limit, so they stay inside the card.
       style={{
         left: card.x,
@@ -53,7 +53,7 @@ export function AnswerCard({ card, onDismiss }: AnswerCardProps) {
       )}
 
       <p className={labelClass}>Answer</p>
-      <div className="rounded-lg bg-emerald-50 px-3 py-1 text-2xl text-emerald-900">
+      <div className="rounded-lg bg-neutral-100 px-3 py-1 text-2xl text-neutral-900">
         <Latex source={card.answer} />
       </div>
     </div>

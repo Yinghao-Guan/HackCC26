@@ -20,7 +20,7 @@ export function CheckCard({ card, onDismiss }: CheckCardProps) {
     // over it. Only the dismiss button takes clicks.
     <div
       className={`pointer-events-none absolute rounded-2xl border-2 bg-white/95 p-5 shadow-lg ${
-        mistake ? "border-rose-500" : "border-emerald-500"
+        mistake ? "border-neutral-900" : "border-neutral-500"
       }`}
       style={{ left: card.x, top: card.y, width: CHECK_CARD_WIDTH }}
     >
@@ -34,7 +34,7 @@ export function CheckCard({ card, onDismiss }: CheckCardProps) {
       </button>
 
       <p className={labelClass}>Check</p>
-      <p className={`mb-2 text-2xl font-semibold ${mistake ? "text-rose-700" : "text-emerald-700"}`}>
+      <p className={`mb-2 text-2xl font-semibold text-neutral-900`}>
         {mistake
           ? card.step
             ? `Step ${card.step} has a mistake`
@@ -66,7 +66,7 @@ export function CheckCard({ card, onDismiss }: CheckCardProps) {
       {card.answer && (
         <>
           <p className={labelClass}>{mistake ? "Correct answer" : "Final answer"}</p>
-          <div className="rounded-lg bg-emerald-50 px-3 py-1 text-2xl text-emerald-900">
+          <div className="rounded-lg bg-neutral-100 px-3 py-1 text-2xl text-neutral-900">
             <Latex source={card.answer} />
           </div>
         </>

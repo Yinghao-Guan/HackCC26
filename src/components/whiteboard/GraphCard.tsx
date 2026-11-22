@@ -16,7 +16,7 @@ export function GraphCard({ card, onDismiss }: GraphCardProps) {
     // The card lets pointer events through, so you can keep writing around and
     // over it. Only the dismiss button takes clicks.
     <div
-      className="pointer-events-none absolute rounded-2xl border-2 border-blue-500 bg-white/95 p-5 shadow-lg"
+      className="pointer-events-none absolute rounded-2xl border-2 border-neutral-900 bg-white/95 p-5 shadow-lg"
       style={{ left: card.x, top: card.y, width: GRAPH_CARD_WIDTH }}
     >
       <button

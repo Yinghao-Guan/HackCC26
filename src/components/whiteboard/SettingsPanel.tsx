@@ -1,20 +1,8 @@
 "use client";
 
-import { useId, type ReactNode } from "react";
-import {
-  BRIGHTNESS_LIMITS,
-  BRIGHTNESS_PRESETS,
-  boardColor,
-  COLORS,
-  SIZE_LIMITS,
-  sizeOf,
-  type EraserMode,
-  type SizedTool,
-  type Tool,
-  type WhiteboardSettings,
-} from "./settings";
+import type { ReactNode } from "react";
+import type { EraserMode, Tool, WhiteboardSettings } from "./settings";
 import type { AiStatus } from "./ai";
-import { TEXT_FONT_FAMILY } from "./text";
 
 interface SettingsPanelProps {
   settings: WhiteboardSettings;
@@ -43,12 +31,6 @@ const TOOLS: { value: Tool; label: string }[] = [
 const TOOL_HINTS: Partial<Record<Tool, string>> = {
   text: "Click the board to type. Click text to edit it. Press Esc or click away to finish.",
   move: "Drag the board to move around. You can also scroll with the mouse wheel or trackpad, or drag with the middle mouse button.",
-};
-
-const SIZE_LABELS: Record<SizedTool, string> = {
-  pen: "Pen size",
-  eraser: "Eraser size",
-  text: "Text size",
 };
 
 const ERASER_MODES: { value: EraserMode; label: string; hint: string }[] = [
@@ -94,19 +76,7 @@ export function SettingsPanel({
   const busy = ai.state === "loading" || ai.state === "capturing";
   const busyWith = (action: "solve" | "graph" | "check") =>
     (ai.state === "loading" || ai.state === "capturing") && ai.action === action;
-  const sizeId = useId();
-  const brightnessId = useId();
-  const { tool, eraserMode, color, boardBrightness } = settings;
-
-  // The Move tool has no size.
-  const sizedTool: SizedTool | null = tool === "move" ? null : tool;
-  const size = sizeOf(settings);
-
-  const handleSizeChange = (value: number) => {
-    if (tool === "pen") onSettingsChange({ penSize: value });
-    else if (tool === "eraser") onSettingsChange({ eraserSize: value });
-    else if (tool === "text") onSettingsChange({ textSize: value });
-  };
+  const { tool, eraserMode } = settings;
 
   return (
     <aside
@@ -121,7 +91,7 @@ export function SettingsPanel({
             type="button"
             onClick={onSolve}
             disabled={busy}
-            className="h-14 rounded-lg bg-emerald-600 text-lg font-semibold text-white transition-colors hover:bg-emerald-700 disabled:pointer-events-none disabled:opacity-60"
+            className="h-14 rounded-lg bg-neutral-900 text-lg font-semibold text-white transition-colors hover:bg-neutral-700 disabled:pointer-events-none disabled:opacity-60"
           >
             {busyWith("solve") ? "Reading…" : "Solve"}
           </button>
@@ -129,7 +99,7 @@ export function SettingsPanel({
             type="button"
             onClick={onGraph}
             disabled={busy}
-            className="h-14 rounded-lg bg-blue-600 text-lg font-semibold text-white transition-colors hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-60"
+            className="h-14 rounded-lg bg-neutral-900 text-lg font-semibold text-white transition-colors hover:bg-neutral-700 disabled:pointer-events-none disabled:opacity-60"
           >
             {busyWith("graph") ? "Drawing…" : "Graph"}
           </button>
@@ -137,7 +107,7 @@ export function SettingsPanel({
             type="button"
             onClick={onCheck}
             disabled={busy}
-            className="h-14 rounded-lg bg-violet-600 text-lg font-semibold text-white transition-colors hover:bg-violet-700 disabled:pointer-events-none disabled:opacity-60"
+            className="h-14 rounded-lg bg-neutral-900 text-lg font-semibold text-white transition-colors hover:bg-neutral-700 disabled:pointer-events-none disabled:opacity-60"
           >
             {busyWith("check") ? "Checking…" : "Check"}
           </button>
@@ -145,7 +115,7 @@ export function SettingsPanel({
         <p
           role="status"
           className={`text-sm ${
-            ai.state === "message" && ai.tone === "error" ? "text-red-700" : "text-neutral-500"
+            ai.state === "message" && ai.tone === "error" ? "font-medium text-neutral-900" : "text-neutral-500"
           }`}
         >
           {ai.state === "capturing"
@@ -206,120 +176,6 @@ export function SettingsPanel({
         </PanelSection>
       )}
 
-      <PanelSection title="Color">
-        <div className="flex flex-wrap gap-3">
-          {COLORS.map(({ name, value }) => {
-            const selected = (tool === "pen" || tool === "text") && color === value;
-            return (
-              <button
-                key={value}
-                type="button"
-                aria-label={name}
-                aria-pressed={selected}
-                // Picking a color keeps the text tool, and otherwise switches to the pen.
-                onClick={() =>
-                  onSettingsChange(tool === "text" ? { color: value } : { tool: "pen", color: value })
-                }
-                className={`size-11 rounded-full border border-black/10 transition-shadow ${
-                  selected ? "ring-2 ring-neutral-900 ring-offset-2" : ""
-                }`}
-                style={{ backgroundColor: value }}
-              />
-            );
-          })}
-        </div>
-      </PanelSection>
-
-      {sizedTool && (
-        <PanelSection title="Size">
-          <div
-            className="grid h-28 place-items-center overflow-hidden rounded-lg border border-neutral-200"
-            // The same gray as the board, so that light ink shows up in the preview.
-            style={{ backgroundColor: boardColor(boardBrightness) }}
-          >
-            {sizedTool === "text" ? (
-              <span
-                aria-hidden="true"
-                className="leading-none"
-                style={{
-                  fontFamily: TEXT_FONT_FAMILY,
-                  fontSize: Math.min(size, 72),
-                  color,
-                }}
-              >
-                Aa
-              </span>
-            ) : (
-              <div
-                aria-hidden="true"
-                className={`rounded-full ${
-                  sizedTool === "eraser" ? "border border-dashed border-neutral-400" : ""
-                }`}
-                style={{
-                  width: size,
-                  height: size,
-                  backgroundColor: sizedTool === "pen" ? color : undefined,
-                }}
-              />
-            )}
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <label htmlFor={sizeId} className="font-medium">
-              {SIZE_LABELS[sizedTool]}
-            </label>
-            <span className="tabular-nums text-neutral-500">{size}px</span>
-          </div>
-          <input
-            id={sizeId}
-            type="range"
-            min={SIZE_LIMITS[sizedTool].min}
-            max={SIZE_LIMITS[sizedTool].max}
-            step={1}
-            value={size}
-            onChange={(e) => handleSizeChange(Number(e.target.value))}
-            className="h-8 w-full cursor-pointer accent-neutral-900"
-          />
-        </PanelSection>
-      )}
-
-      <PanelSection title="Board brightness">
-        <div className="grid grid-cols-4 gap-2">
-          {BRIGHTNESS_PRESETS.map((value) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={boardBrightness === value}
-              onClick={() => onSettingsChange({ boardBrightness: value })}
-              className={`${buttonBase} px-0 text-[15px] ${
-                boardBrightness === value ? buttonActive : buttonIdle
-              }`}
-            >
-              {value}%
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center justify-between text-sm">
-          <label htmlFor={brightnessId} className="font-medium">
-            Brightness
-          </label>
-          <span className="tabular-nums text-neutral-500">{boardBrightness}%</span>
-        </div>
-        <input
-          id={brightnessId}
-          type="range"
-          min={BRIGHTNESS_LIMITS.min}
-          max={BRIGHTNESS_LIMITS.max}
-          step={1}
-          value={boardBrightness}
-          onChange={(e) => onSettingsChange({ boardBrightness: Number(e.target.value) })}
-          className="h-8 w-full cursor-pointer accent-neutral-900"
-        />
-        <p className="text-sm text-neutral-500">
-          A dimmer board glares less, but the finger&apos;s shadow on it is fainter. Find the level
-          where the shadow still shows.
-        </p>
-      </PanelSection>
-
       <PanelSection title="Board">
         <div className="grid grid-cols-2 gap-2">
           <button
@@ -335,7 +191,7 @@ export function SettingsPanel({
             type="button"
             onClick={onClear}
             disabled={!canClear}
-            className={`${buttonBase} border-red-200 bg-white text-red-700 hover:bg-red-50`}
+            className={`${buttonBase} ${buttonIdle}`}
           >
             Clear
           </button>

@@ -18,10 +18,27 @@ import {
 } from "@/lib/boardLink";
 import { findWriting, pictureSize, straighten } from "./boardPicture";
 import { calibrationFrom, type Calibration } from "./calibrate";
-import { invertMatrix } from "./homography";
+import { evenRows, gainAt, rowGains } from "./flicker";
+import { applyHomography, invertMatrix } from "./homography";
 import { createHandTracker, type Bone, type Hand, type HandTracker } from "./handTracker";
 import { luminanceAround, meanLuminance, paintDarkMask } from "./luma";
 import { Pen } from "./pen";
+import {
+  blueShareOf,
+  boardGain,
+  capBoard,
+  DEFAULT_BLUE_GAIN,
+  DEFAULT_PEN_TOUCH_BELOW,
+  findCap,
+  readPen,
+  referenceAt,
+  valueAt,
+  type BoardColors,
+  type Box,
+  type CapSpot,
+  type PenReading,
+  windowArea,
+} from "./penTip";
 import {
   DEFAULT_OTHERS_SHORTER,
   FINGER_NAMES,
@@ -57,9 +74,10 @@ import {
 
 // A page for trying out a camera setup (angle, brightness, lighting) and the
 // shadow touch detection. It shows what the camera sees, how well the hand is
-// tracked, whether the hand is in the writing pose (only the index finger out),
-// whether the fingertip is touching its shadow (and so the board), and how dark
-// the shadow is next to the lit board.
+// tracked, and whether the pointer touches the board: a marker with its blue cap
+// on (the tip meets its shadow), or a finger in the writing pose (only the index
+// finger out) whose shadow stops at the fingertip. It also shows how dark the
+// shadow is next to the lit board.
 
 const RESOLUTIONS = {
   "480p": { width: 640, height: 480 },
@@ -96,6 +114,14 @@ const COUNTDOWN_MS = 3000; // time to take your hand away before the empty board
 const TRACE_MS = 6000; // how much of the gap's history the trace shows
 const TRACE_MAX_GAP = 1.5;
 const LAST_CAMERA_KEY = "hackcc26.camera";
+// The capped pen: a cap missing for fewer frames than this is held where it was, so one bad frame does not drop a press.
+const CAP_LOST_FRAMES = 4;
+// A cap that has lain still with no hand in view this long is put down, not held: it may become part of the empty board.
+const CAP_PARKED_MS = 5000;
+const CAP_PARKED_MOVE = 4; // pixels: the cap moved if its tip moved more than this
+const CAP_WINDOW_MARGIN = 0.05; // the cap is looked for this far around the whiteboard window (shares of it)
+const MAX_CROP = 1000; // the piece of the full-size picture measured around the cap is at most this wide and high
+const PALM = [0, 5, 9, 13, 17]; // the wrist and the knuckles: their middle is the middle of the hand
 const THUMB_TIP = 4;
 const INDEX_MIDDLE_JOINT = 6; // the finger's direction is taken from here to the tip
 const INDEX_TIP = 8;
@@ -112,6 +138,9 @@ type CameraState =
       capabilities: string;
     }
   | { kind: "error"; message: string };
+
+/** What presses the whiteboard's buttons: a marker with its blue cap on, or a finger. */
+type PointerKind = "pen" | "finger";
 
 type ModelState =
   | { kind: "loading" }
@@ -219,6 +248,8 @@ interface Readout {
   skinPixels: number | null;
   /** How much the camera's exposure has changed since the empty board was captured. */
   gain: number | null;
+  /** How strong the flicker bands are: the brightest row against the darkest, next to the empty board (0 is none). */
+  flicker: number | null;
   reference: ReferenceStatus;
   /** Is the hand writing: in the writing pose and touching the board (held for a few frames)? */
   writing: boolean;
@@ -232,6 +263,15 @@ interface Readout {
   lastClick: string | null;
   /** What is happening with a snapshot being saved, if anything. */
   snapshot: string | null;
+  /** The capped pen: is its blue cap in view, how wide it looks, and the gap from its tip to its shadow (cap widths). */
+  penFound: boolean;
+  /** The tip of the cap, in picture pixels. */
+  penTip: Point | null;
+  penWidth: number | null;
+  penGap: number | null;
+  /** Is the tip of the cap's shadow hidden under the cap (the gap is then measured across, to the shadow's line)? */
+  penShadowHidden: boolean;
+  penShadowPixels: number | null;
   fps: number;
   inferenceMs: number | null;
   lost: number | null;
@@ -253,6 +293,7 @@ const EMPTY_READOUT: Readout = {
   shadowPixels: null,
   skinPixels: null,
   gain: null,
+  flicker: null,
   reference: { kind: "none" },
   writing: false,
   linked: false,
@@ -261,6 +302,12 @@ const EMPTY_READOUT: Readout = {
   pointerTouching: false,
   lastClick: null,
   snapshot: null,
+  penFound: false,
+  penTip: null,
+  penWidth: null,
+  penGap: null,
+  penShadowHidden: false,
+  penShadowPixels: null,
   fps: 0,
   inferenceMs: null,
   lost: null,
@@ -586,6 +633,203 @@ function drawShadowDebug(
   }
 }
 
+/** A box around a hand in the shrunk picture, reaching as far again as the hand is big on every side: a pen held in it is inside. */
+function handBox(pixels: Point[]): Box {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const point of pixels) {
+    left = Math.min(left, point.x);
+    top = Math.min(top, point.y);
+    right = Math.max(right, point.x);
+    bottom = Math.max(bottom, point.y);
+  }
+  const size = Math.max(right - left, bottom - top);
+  return { left: left - size, top: top - size, right: right + size, bottom: bottom + size };
+}
+
+const inBox = (point: Point, box: Box) =>
+  point.x >= box.left && point.x <= box.right && point.y >= box.top && point.y <= box.bottom;
+
+/** The middle of a hand (the wrist and the knuckles), in the same pixels as its landmarks. */
+function palmOf(pixels: Point[]): Point {
+  let x = 0;
+  let y = 0;
+  for (const index of PALM) {
+    x += pixels[index].x;
+    y += pixels[index].y;
+  }
+  return { x: x / PALM.length, y: y / PALM.length };
+}
+
+/** Canvases for measuring the capped pen: the piece of the full-size picture around it, and what was found in it. */
+interface CapCanvases {
+  piece: HTMLCanvasElement;
+  pieceCtx: CanvasRenderingContext2D;
+  paint: HTMLCanvasElement;
+  paintCtx: CanvasRenderingContext2D;
+}
+
+/**
+ * Find the capped pen: roughly in the shrunk picture (near a hand if one is seen),
+ * then measured in a piece of the full-size picture around it. When `overlay` is
+ * given, the cap and the shadow found are painted on it.
+ */
+function measureCap(input: {
+  video: HTMLVideoElement;
+  /** The full-size picture's size. */
+  width: number;
+  height: number;
+  /** The shrunk picture and its brightness. */
+  picture: ImageData;
+  luma: Float32Array;
+  /** How much brighter each row of the shrunk picture is than the empty board (flicker bands), or null. */
+  gains: Float32Array | null;
+  /** The empty board, the same size as the shrunk picture, or null if there is none, and as the cap is told from it. */
+  reference: Reference | null;
+  capBoard: BoardColors | null;
+  /** Where in the shrunk picture the cap may be (the whiteboard window and a little around it), or null for anywhere. */
+  area: Uint8Array | null;
+  hands: Found[];
+  previousTip: Point | null;
+  blueGain: number;
+  shadowRatio: number;
+  skinTolerance: number;
+  canvases: CapCanvases;
+  overlay: CanvasRenderingContext2D | null;
+}): { reading: PenReading | null; gain: number | null } {
+  const { width, height, picture, luma, reference, hands, canvases, gains } = input;
+  const scale = width / picture.width;
+  // The cap is told from the board by being bluer than the empty board, so it needs the empty board.
+  const board = input.capBoard;
+  if (!reference || !board || board.width !== reference.width || board.height !== reference.height) {
+    return { reading: null, gain: null };
+  }
+
+  // Blue near a hand, or anywhere if no hand is seen near any blue (the hand model can miss a hand).
+  const boxes = hands.map((hand) => handBox(hand.pixels));
+  const spot: CapSpot | null =
+    (boxes.length > 0 ? findCap(picture, board, gains, input.blueGain, boxes, input.area) : null) ??
+    findCap(picture, board, gains, input.blueGain, null, input.area);
+  if (!spot) return { reading: null, gain: null };
+
+  // The piece of the full-size picture around the cap, with room for its shadow.
+  const size = Math.max(spot.right - spot.left, spot.bottom - spot.top) + 1;
+  const margin = Math.max(size * 1.2, 16);
+  const left = Math.max(0, Math.floor((spot.left - margin) * scale));
+  const top = Math.max(0, Math.floor((spot.top - margin) * scale));
+  const right = Math.min(width, left + MAX_CROP, Math.ceil((spot.right + 1 + margin) * scale));
+  const bottom = Math.min(height, top + MAX_CROP, Math.ceil((spot.bottom + 1 + margin) * scale));
+  const pieceWidth = right - left;
+  const pieceHeight = bottom - top;
+  if (pieceWidth < 8 || pieceHeight < 8) return { reading: null, gain: null };
+  const { piece, pieceCtx } = canvases;
+  if (piece.width !== pieceWidth || piece.height !== pieceHeight) {
+    piece.width = pieceWidth;
+    piece.height = pieceHeight;
+  }
+  pieceCtx.drawImage(input.video, left, top, pieceWidth, pieceHeight, 0, 0, pieceWidth, pieceHeight);
+  const crop = pieceCtx.getImageData(0, 0, pieceWidth, pieceHeight);
+
+  // The empty board under each full-size pixel, from the shrunk picture of it: its brightness corrected for
+  // the exposure of its row (which takes out flicker bands), and its blue share.
+  const gain = boardGain(luma, reference);
+  const boardAt = (x: number, y: number) => {
+    const sy = (y + 0.5) / scale - 0.5;
+    return referenceAt(reference, (x + 0.5) / scale - 0.5, sy) * (gains ? gainAt(gains, sy) : gain);
+  };
+  const capBlueAt = (x: number, y: number) =>
+    valueAt(board.blue, board.width, board.height, (x + 0.5) / scale - 0.5, (y + 0.5) / scale - 0.5);
+  const capLevelAt = (x: number, y: number) => {
+    const sy = (y + 0.5) / scale - 0.5;
+    return valueAt(board.luma, board.width, board.height, (x + 0.5) / scale - 0.5, sy) * (gains ? gainAt(gains, sy) : gain);
+  };
+
+  // The hand holding the pen: the tip is the end away from it, and its skin is not shadow.
+  const holder = hands.find((hand) => inBox(spot, handBox(hand.pixels))) ?? null;
+  const palm = holder ? palmOf(holder.pixels) : null;
+
+  const paint = input.overlay ? new ImageData(pieceWidth, pieceHeight) : null;
+  const reading = readPen({
+    crop,
+    left,
+    top,
+    boardAt,
+    capBlueAt,
+    capLevelAt,
+    blueGain: input.blueGain,
+    shadowRatio: input.shadowRatio,
+    palm: palm ? { x: palm.x * scale, y: palm.y * scale } : null,
+    previousTip: input.previousTip,
+    skin: holder ? skinModelFrom(picture, holder.pixels) : null,
+    skinTolerance: input.skinTolerance,
+    paint: paint?.data,
+  });
+
+  if (paint && input.overlay) {
+    const { paint: paintCanvas, paintCtx } = canvases;
+    if (paintCanvas.width !== pieceWidth || paintCanvas.height !== pieceHeight) {
+      paintCanvas.width = pieceWidth;
+      paintCanvas.height = pieceHeight;
+    }
+    paintCtx.putImageData(paint, 0, 0);
+    input.overlay.drawImage(paintCanvas, left, top);
+  }
+  return { reading, gain };
+}
+
+/**
+ * Show what was found of the capped pen: the line along the cap from the back to
+ * the tip, a ring on the tip (green while touching), how far around the tip shadow
+ * was looked for (dashed), the line along its shadow, and a line from the tip of
+ * the cap to the tip of the shadow (the gap). The two lines are the "V".
+ */
+function drawPenDebug(ctx: CanvasRenderingContext2D, reading: PenReading, touching: boolean) {
+  const line = Math.max(2, ctx.canvas.width / 320);
+  const { tip, back, shadowTip, shadowEnd } = reading;
+  ctx.lineCap = "round";
+
+  ctx.beginPath();
+  ctx.arc(tip.x, tip.y, reading.searchRadius, 0, Math.PI * 2);
+  ctx.lineWidth = line * 0.8;
+  ctx.setLineDash([line * 3, line * 3]);
+  ctx.strokeStyle = "rgba(14, 165, 233, 0.8)";
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.beginPath();
+  ctx.moveTo(back.x, back.y);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.lineWidth = line * 2.5;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+  ctx.stroke();
+  ctx.lineWidth = line;
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.95)";
+  ctx.stroke();
+
+  if (shadowTip && shadowEnd) {
+    ctx.beginPath();
+    ctx.moveTo(shadowEnd.x, shadowEnd.y);
+    ctx.lineTo(shadowTip.x, shadowTip.y);
+    ctx.lineWidth = line * 2.5;
+    ctx.strokeStyle = "rgba(0, 0, 0, 0.55)";
+    ctx.stroke();
+    ctx.lineWidth = line;
+    ctx.strokeStyle = "#22d3ee";
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(shadowTip.x, shadowTip.y);
+    ctx.lineWidth = line * 1.2;
+    ctx.strokeStyle = "#f59e0b";
+    ctx.stroke();
+    ring(ctx, shadowTip.x, shadowTip.y, line * 1.5, "#f59e0b", line * 0.8);
+  }
+  ring(ctx, tip.x, tip.y, line * 3, touching ? "#22c55e" : "#38bdf8", line);
+}
+
 /** Draw the gap over the last few seconds, with the touch thresholds and the times the board was touched. */
 function drawTrace(
   canvas: HTMLCanvasElement,
@@ -721,6 +965,9 @@ export function CameraTest() {
   const [handMargin, setHandMargin] = useState(DEFAULT_HAND_MARGIN);
   const [skinTolerance, setSkinTolerance] = useState(DEFAULT_SKIN_TOLERANCE);
   const [touchBelow, setTouchBelow] = useState(DEFAULT_TOUCH_BELOW);
+  const [pointerKind, setPointerKind] = useState<PointerKind>("pen");
+  const [penTouchBelow, setPenTouchBelow] = useState(DEFAULT_PEN_TOUCH_BELOW);
+  const [blueGain, setBlueGain] = useState(DEFAULT_BLUE_GAIN);
   const [sendToBoard, setSendToBoard] = useState(true);
   const [smoothing, setSmoothing] = useState(DEFAULT_SMOOTHING);
   // Off by default: writing is done with a marker, and the finger only presses buttons.
@@ -738,6 +985,9 @@ export function CameraTest() {
   const handMarginId = useId();
   const skinToleranceId = useId();
   const touchBelowId = useId();
+  const pointerKindId = useId();
+  const penTouchBelowId = useId();
+  const blueGainId = useId();
   const smoothingId = useId();
   const thresholdId = useId();
 
@@ -760,6 +1010,9 @@ export function CameraTest() {
     handMargin: DEFAULT_HAND_MARGIN,
     skinTolerance: DEFAULT_SKIN_TOLERANCE,
     touchBelow: DEFAULT_TOUCH_BELOW,
+    pointerKind: "pen" as PointerKind,
+    penTouchBelow: DEFAULT_PEN_TOUCH_BELOW,
+    blueGain: DEFAULT_BLUE_GAIN,
     sendToBoard: true,
     smoothing: DEFAULT_SMOOTHING,
     fingerDraws: false,
@@ -783,13 +1036,18 @@ export function CameraTest() {
   const lastTickRef = useRef(-Infinity);
   // The picture of the empty board that shadow is found against. It outlives camera restarts.
   const referenceRef = useRef<Reference | null>(null);
+  // Blue that was on the empty board (blue writing, a blue swatch on the projected panel): never the pen's cap.
+  // The empty board as the pen's cap is told from it by color (see capBoard in penTip.ts).
+  const capBoardRef = useRef<BoardColors | null>(null);
   // A snapshot that is counting down before it is saved.
   const snapshotRef = useRef<{ label: "touching" | "hovering"; startAt: number } | null>(null);
-  // A capture of the empty board that is counting down or collecting frames. `auto` when the page
-  // started it by itself (no hand in view), so it can be dropped if a hand comes in.
+  // A capture of the empty board that is counting down or collecting frames (its brightness, and its
+  // blue share for telling the pen's cap from it). `auto` when the page started it by itself (no hand
+  // in view), so it can be dropped if a hand comes in.
   const captureRef = useRef<{
     startAt: number;
     sum: Float32Array | null;
+    blueSum?: Float32Array | null;
     count: number;
     auto?: boolean;
   } | null>(null);
@@ -999,6 +1257,9 @@ export function CameraTest() {
       handMargin,
       skinTolerance,
       touchBelow,
+      pointerKind,
+      penTouchBelow,
+      blueGain,
       sendToBoard,
       smoothing,
       fingerDraws,
@@ -1013,6 +1274,9 @@ export function CameraTest() {
     handMargin,
     skinTolerance,
     touchBelow,
+    pointerKind,
+    penTouchBelow,
+    blueGain,
     sendToBoard,
     smoothing,
     fingerDraws,
@@ -1051,7 +1315,13 @@ export function CameraTest() {
     // The full-size picture, for pictures of the marker writing (small writing needs every pixel).
     const full = document.createElement("canvas");
     const fullCtx = full.getContext("2d", { willReadFrequently: true });
-    if (!overlayCtx || !maskCtx || !sampleCtx || !fullCtx) return;
+    // For the capped pen: a piece of the full-size picture around it, and what was found in it.
+    const piece = document.createElement("canvas");
+    const pieceCtx = piece.getContext("2d", { willReadFrequently: true });
+    const paintPiece = document.createElement("canvas");
+    const paintPieceCtx = paintPiece.getContext("2d");
+    if (!overlayCtx || !maskCtx || !sampleCtx || !fullCtx || !pieceCtx || !paintPieceCtx) return;
+    const capCanvases: CapCanvases = { piece, pieceCtx, paint: paintPiece, paintCtx: paintPieceCtx };
 
     const post = (message: BoardMessage) => channelRef.current?.postMessage(message);
     // For keeping the picture of the empty board up to date.
@@ -1061,12 +1331,24 @@ export function CameraTest() {
     let lastAutoReference = -Infinity;
 
     metricsRef.current = { ...EMPTY_READOUT };
-    const trace = traceRef.current;
     const samples: TipSample[] = [];
     const history: GapSample[] = [];
     const frameTimes: number[] = [];
     let touch: TouchState = { touching: false, streak: 0 };
     const pen = new Pen();
+    let pointerKind = optionsRef.current.pointerKind;
+    // The capped pen's tip in the last frame (full-size picture pixels), and for how many frames the cap has been missing.
+    let previousTip: Point | null = null;
+    let capMissing = 0;
+    // The canvas the trace was last drawn on.
+    let trace: HTMLCanvasElement | null = null;
+    // A cap in view stops the picture of the empty board from being updated, unless it has been put down:
+    // lying still with no hand in view for a while. Where and since when it has lain still.
+    let capParkedAt: Point | null = null;
+    let capParkedSince = 0;
+    let capBlocksReference = false;
+    // Where the cap may be in the shrunk picture, for the calibration it was worked out from.
+    let capArea: { key: string; area: Uint8Array } | null = null;
     let maskImage: ImageData | null = null;
     let maskDrawn = false;
     let inferenceMs: number | null = null;
@@ -1116,19 +1398,36 @@ export function CameraTest() {
       sampleCtx.drawImage(video, 0, 0, SAMPLE_WIDTH, sampleHeight);
       const picture = sampleCtx.getImageData(0, 0, SAMPLE_WIDTH, sampleHeight);
       const luma = lumaOf(picture);
+      // Flicker bands (dark bands across the picture that roll up or down: see flicker.ts) are taken out
+      // row by row against the empty board, so they are not taken for shadow or for movement.
+      const known = referenceRef.current;
+      const gains =
+        known && known.width === SAMPLE_WIDTH && known.height === sampleHeight ? rowGains(luma, known) : null;
+      const even = gains ? evenRows(luma, gains, SAMPLE_WIDTH) : luma;
+      if (gains) {
+        let low = Infinity;
+        let high = 0;
+        for (const value of gains) {
+          low = Math.min(low, value);
+          high = Math.max(high, value);
+        }
+        metrics.flicker = high > 0 ? (high - low) / high : null;
+      } else {
+        metrics.flicker = null;
+      }
 
       // How much the picture changed since the last frame (for telling when it is still).
       let motion = Infinity;
-      if (previousLuma && previousLuma.length === luma.length) {
+      if (previousLuma && previousLuma.length === even.length) {
         let sum = 0;
         let count = 0;
-        for (let i = 0; i < luma.length; i += 16) {
-          sum += Math.abs(luma[i] - previousLuma[i]);
+        for (let i = 0; i < even.length; i += 16) {
+          sum += Math.abs(even[i] - previousLuma[i]);
           count++;
         }
         motion = sum / count;
       }
-      previousLuma = luma;
+      previousLuma = even;
 
       // Taking the picture of the empty board: count down, then average a few frames.
       const capture = captureRef.current;
@@ -1136,19 +1435,23 @@ export function CameraTest() {
         if (now < capture.startAt) {
           metrics.reference = { kind: "countdown", seconds: Math.ceil((capture.startAt - now) / 1000) };
         } else {
-          if (!capture.sum || capture.sum.length !== luma.length) {
+          if (!capture.sum || capture.sum.length !== luma.length || !capture.blueSum) {
             capture.sum = new Float32Array(luma.length);
+            capture.blueSum = new Float32Array(luma.length);
             capture.count = 0;
           }
           addFrame(capture.sum, luma);
+          addFrame(capture.blueSum, blueShareOf(picture));
           capture.count++;
           metrics.reference = { kind: "capturing" };
           if (capture.count >= REFERENCE_FRAMES) {
-            referenceRef.current = {
+            const captured: Reference = {
               luma: averageOf(capture.sum, capture.count),
               width: SAMPLE_WIDTH,
               height: sampleHeight,
             };
+            referenceRef.current = captured;
+            capBoardRef.current = capBoard(captured, averageOf(capture.blueSum, capture.count));
             captureRef.current = null;
           }
         }
@@ -1347,9 +1650,11 @@ export function CameraTest() {
       // Keep the picture of the empty board up to date: whenever no hand has been in view for a while
       // and the picture is still, take a new one. New marker writing and changes on the projected
       // board (a new answer card, a button that changed color) then do not look like shadow.
-      noHandSince = found.length === 0 ? (noHandSince ?? now) : null;
+      // A pen held in view counts as a hand (the hand model can miss a hand holding a pen).
+      const handInView = found.length > 0 || capBlocksReference;
+      noHandSince = handInView ? null : (noHandSince ?? now);
       stableFrames = motion < MOTION_LIMIT ? stableFrames + 1 : 0;
-      if (captureRef.current?.auto && found.length > 0) captureRef.current = null; // a hand came in: start again later
+      if (captureRef.current?.auto && handInView) captureRef.current = null; // a hand came in: start again later
       if (
         !captureRef.current &&
         !pictureJobRef.current &&
@@ -1392,50 +1697,122 @@ export function CameraTest() {
         metrics.darkShare = null;
       }
 
-      // Shadow touch: does the shadow reach past the fingertip, or stop at it against the hand?
-      let reading: ShadowReading | null = null;
-      if (
-        reference &&
-        reference.width === SAMPLE_WIDTH &&
-        reference.height === sampleHeight &&
-        primary &&
-        primaryTip &&
-        primaryDirection &&
-        primaryShape
-      ) {
-        reading = readShadow({
-          luma,
-          colors: picture,
-          reference,
-          tip: primaryTip,
-          direction: primaryDirection,
-          hand: primaryShape,
-          skin: skinModelFrom(picture, primary.pixels),
-          params: {
-            shadowRatio: options.shadowRatio,
-            handMargin: options.handMargin,
-            skinTolerance: options.skinTolerance,
-          },
-          paint,
-        });
+      // Switching between the pen and the finger starts afresh, and lets go of anything held on the whiteboard.
+      if (options.pointerKind !== pointerKind) {
+        pointerKind = options.pointerKind;
+        touch = { touching: false, streak: 0 };
+        history.length = 0;
+        previousTip = null;
+        capMissing = 0;
+        const lost = pen.lost();
+        if (lost) post(lost);
       }
-      touch = stepTouch(touch, reading ? reading.gap : null, options.touchBelow);
+      const usableReference =
+        reference && reference.width === SAMPLE_WIDTH && reference.height === sampleHeight ? reference : null;
+
+      // Touch. With a finger: does the shadow reach past the fingertip, or stop at it against the hand?
+      // With the capped pen: does the tip of the cap meet its shadow?
+      let reading: ShadowReading | null = null;
+      let cap: PenReading | null = null;
+      if (pointerKind === "finger") {
+        if (usableReference && primary && primaryTip && primaryDirection && primaryShape) {
+          reading = readShadow({
+            luma: even,
+            colors: picture,
+            reference: usableReference,
+            tip: primaryTip,
+            direction: primaryDirection,
+            hand: primaryShape,
+            skin: skinModelFrom(picture, primary.pixels),
+            params: {
+              shadowRatio: options.shadowRatio,
+              handMargin: options.handMargin,
+              skinTolerance: options.skinTolerance,
+            },
+            paint,
+          });
+        }
+        touch = stepTouch(touch, reading ? reading.gap : null, options.touchBelow);
+        metrics.gain = reading ? reading.gain : null;
+      } else {
+        // The cap is only looked for on the whiteboard window and a little around it, so blue clothes at the
+        // side of the picture are not taken for it.
+        if (calibrationRef.current === undefined) calibrationRef.current = loadCalibration();
+        const known = calibrationRef.current;
+        const areaKey = known ? `${known.savedAt} ${SAMPLE_WIDTH}x${sampleHeight}` : "";
+        if (known && capArea?.key !== areaKey) {
+          capArea = {
+            key: areaKey,
+            area: windowArea(SAMPLE_WIDTH, sampleHeight, (p) => applyHomography(known.matrix, p), CAP_WINDOW_MARGIN),
+          };
+        }
+        const measured = measureCap({
+          video,
+          width,
+          height,
+          picture,
+          luma,
+          gains: usableReference ? gains : null,
+          reference: usableReference,
+          capBoard: usableReference ? capBoardRef.current : null,
+          area: known && capArea ? capArea.area : null,
+          hands: found,
+          previousTip,
+          blueGain: options.blueGain,
+          shadowRatio: options.shadowRatio,
+          skinTolerance: options.skinTolerance,
+          canvases: capCanvases,
+          overlay: options.showShadow ? overlayCtx : null,
+        });
+        cap = measured.reading;
+        // A frame without the cap keeps the touch as it was, until the cap has been missing for a few frames.
+        if (cap) touch = stepTouch(touch, cap.gap, options.penTouchBelow);
+        metrics.gain = measured.gain;
+      }
+      if (cap && found.length === 0) {
+        if (!capParkedAt || Math.hypot(cap.tip.x - capParkedAt.x, cap.tip.y - capParkedAt.y) > CAP_PARKED_MOVE) {
+          capParkedAt = cap.tip;
+          capParkedSince = now;
+        }
+      } else {
+        capParkedAt = null;
+      }
+      capBlocksReference = cap !== null && !(capParkedAt && now - capParkedSince >= CAP_PARKED_MS);
       metrics.gap = reading ? reading.gap : null;
       metrics.touching = touch.touching;
       metrics.shadowPixels = reading ? reading.shadowPixels : null;
       metrics.skinPixels = reading ? reading.skinPixels : null;
+      metrics.penFound = cap !== null;
+      metrics.penTip = cap ? cap.tip : null;
+      metrics.penWidth = cap ? cap.width : null;
+      metrics.penGap = cap ? cap.gap : null;
+      metrics.penShadowHidden = cap ? cap.shadowHidden : false;
+      metrics.penShadowPixels = cap ? cap.shadowPixels : null;
 
-      // The pen: where the fingertip is on the whiteboard, and whether it is writing. This goes to the
-      // whiteboard window, which draws with it and presses its buttons.
+      // The pointer: where the fingertip or the tip of the cap is on the whiteboard, and whether it is
+      // writing. This goes to the whiteboard window, which presses its buttons with it (and draws, if allowed).
       const board = boardRef.current;
       const linked = board !== null && now - board.seen < BOARD_ALIVE_MS;
       if (calibrationRef.current === undefined) calibrationRef.current = loadCalibration();
       const calibration = calibrationRef.current;
-      if (primary) {
+      // The point in the picture (0 to 1 across it), and whether the pose allows writing (always, for the pen).
+      let pointer: { tip: Point; pointing: boolean } | null = null;
+      if (pointerKind === "finger") {
+        if (primary) {
+          pointer = { tip: { x: primary.hand[INDEX_TIP].x, y: primary.hand[INDEX_TIP].y }, pointing: primary.pointing };
+        }
+      } else if (cap) {
+        capMissing = 0;
+        previousTip = cap.tip;
+        pointer = { tip: { x: cap.tip.x / width, y: cap.tip.y / height }, pointing: true };
+      } else {
+        capMissing++;
+      }
+      if (pointer) {
         const result = pen.update({
           time: now / 1000,
-          tip: { x: primary.hand[INDEX_TIP].x, y: primary.hand[INDEX_TIP].y },
-          pointing: primary.pointing,
+          tip: pointer.tip,
+          pointing: pointer.pointing,
           touching: touch.touching,
           target:
             options.sendToBoard && linked && board && calibration && !calibrationJobRef.current
@@ -1445,11 +1822,15 @@ export function CameraTest() {
           draw: options.fingerDraws,
         });
         metrics.writing = result.writing;
-        if (result.message) channelRef.current?.postMessage(result.message);
-      } else {
+        if (result.message) post(result.message);
+      } else if (pointerKind === "finger" || capMissing >= CAP_LOST_FRAMES) {
         metrics.writing = false;
+        if (pointerKind === "pen") {
+          touch = { touching: false, streak: 0 };
+          previousTip = null;
+        }
         const lost = pen.lost();
-        if (lost) channelRef.current?.postMessage(lost);
+        if (lost) post(lost);
       }
       metrics.linked = linked;
       metrics.calibration = calibrationJobRef.current
@@ -1469,7 +1850,6 @@ export function CameraTest() {
           : calibration
             ? { kind: "ready", error: calibration.error, markers: calibration.markers, savedAt: calibration.savedAt }
             : { kind: "none" };
-      metrics.gain = reading ? reading.gain : null;
 
       if (paintLayer && maskImage) {
         maskCtx.putImageData(maskImage, 0, 0);
@@ -1478,7 +1858,8 @@ export function CameraTest() {
         maskCtx.clearRect(0, 0, mask.width, mask.height);
         maskDrawn = false;
       }
-      if (options.showShadow && primaryShape && primaryTip && primaryDirection) {
+      if (options.showShadow && cap) drawPenDebug(overlayCtx, cap, touch.touching);
+      if (options.showShadow && pointerKind === "finger" && primaryShape && primaryTip && primaryDirection) {
         drawShadowDebug(
           overlayCtx,
           primaryShape,
@@ -1519,12 +1900,16 @@ export function CameraTest() {
         }
       }
 
-      // The trace of the gap over the last few seconds.
-      if (trackerRef.current) {
-        history.push({ t: now, gap: metrics.gap, touching: touch.touching });
+      // The trace of the gap over the last few seconds (the pen's or the finger's).
+      if (trackerRef.current || pointerKind === "pen") {
+        history.push({ t: now, gap: pointerKind === "pen" ? metrics.penGap : metrics.gap, touching: touch.touching });
         while (history.length > 0 && now - history[0].t > TRACE_MS) history.shift();
       }
-      if (trace) drawTrace(trace, history, now, options.touchBelow);
+      // Looked up every frame: the pen and the finger each show the trace in their own section.
+      trace = traceRef.current;
+      if (trace) {
+        drawTrace(trace, history, now, pointerKind === "pen" ? options.penTouchBelow : options.touchBelow);
+      }
     };
     frame = requestAnimationFrame(tick);
 
@@ -1593,6 +1978,13 @@ export function CameraTest() {
     }
   };
 
+  const handlePointerKind = (kind: PointerKind) => {
+    setPointerKind(kind);
+    // The video loop starts afresh with the new pointer, and lets go of anything held on the whiteboard.
+    const message: BoardMessage = { type: "pointer-lost" };
+    channelRef.current?.postMessage(message);
+  };
+
   /** Save a labelled snapshot after a short countdown, so there is time to put the finger in place. */
   const requestSnapshot = (label: "touching" | "hovering") => {
     snapshotRef.current = { label, startAt: performance.now() + COUNTDOWN_MS };
@@ -1643,6 +2035,47 @@ export function CameraTest() {
     : readout.touching
       ? "bg-emerald-100 text-emerald-800"
       : "bg-sky-100 text-sky-800";
+
+  const penText = !referenceReady
+    ? "Capture the empty board first: the cap is found by being bluer than it"
+    : !readout.penFound
+      ? "No blue cap in view"
+      : readout.penGap === null
+        ? "Cap found, but no shadow near its tip: the pen is far from the board"
+        : readout.touching
+          ? "✍️ The pen touches the board"
+          : "The pen is above the board";
+  const penClass = !readout.penFound || !referenceReady
+    ? "bg-neutral-200 text-neutral-700"
+    : readout.touching
+      ? "bg-emerald-600 text-white"
+      : "bg-sky-100 text-sky-800";
+
+  // The trace of the gap, shown in the pen's or the finger's section.
+  const traceCanvas = (
+    <canvas
+      ref={traceRef}
+      width={640}
+      height={160}
+      role="img"
+      aria-label={
+        pointerKind === "pen"
+          ? "The gap between the tip of the cap and its shadow over the last 6 seconds"
+          : "The gap between the fingertip and its shadow over the last 6 seconds"
+      }
+      className="w-full rounded-lg border border-neutral-200 bg-white"
+    />
+  );
+  const captureButton = (
+    <button
+      type="button"
+      onClick={captureReference}
+      disabled={!live}
+      className={`${buttonClass} border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-700`}
+    >
+      Capture empty board (3 s)
+    </button>
+  );
 
   return (
     <div className="flex h-dvh w-full overflow-hidden bg-neutral-100 text-neutral-900">
@@ -1825,9 +2258,23 @@ export function CameraTest() {
               it again whenever the camera, the projector or the board is moved.
             </p>
           )}
-          <Toggle label="Send the finger to the whiteboard" checked={sendToBoard} onChange={handleSendToBoard} />
+          <div className="flex flex-col gap-1">
+            <label htmlFor={pointerKindId} className="text-sm font-medium">
+              Press the buttons with
+            </label>
+            <select
+              id={pointerKindId}
+              value={pointerKind}
+              onChange={(e) => handlePointerKind(e.target.value as PointerKind)}
+              className={selectClass}
+            >
+              <option value="pen">A marker with its blue cap on</option>
+              <option value="finger">A finger (👆, only the index finger out)</option>
+            </select>
+          </div>
+          <Toggle label="Send the pointer to the whiteboard" checked={sendToBoard} onChange={handleSendToBoard} />
           <Toggle
-            label="The finger also draws on the board"
+            label="The pointer also draws on the board"
             checked={fingerDraws}
             onChange={setFingerDraws}
           />
@@ -1860,13 +2307,118 @@ export function CameraTest() {
             Writing with the mouse still counts too.
           </p>
           <p className="text-sm text-neutral-500">
-            Press buttons with one finger (only the index finger out): touch the button and lift.
-            Sliders follow the finger while it touches them. The picture of the empty board that
-            touch is judged against updates by itself whenever no hand has been in view for a
-            moment. Drawing with the finger is off by default; turn it on above. A lower smoothing
-            number holds the finger steadier but makes it lag.
+            Press a button with the pointer (the tip of the capped marker, or one finger with only
+            the index finger out): touch the button and lift. Sliders follow the pointer while it
+            touches them. A wide ring on the whiteboard shows where the pointer is seen (amber
+            while it touches). The picture of the empty board that touch is judged against updates
+            by itself whenever no hand has been in view for a moment. Drawing with the pointer is
+            off by default; turn it on above. A lower smoothing number holds the pointer steadier
+            but makes it lag.
           </p>
         </Section>
+
+        {pointerKind === "pen" && (
+          <Section title="Capped pen">
+            <p className={`rounded-lg px-3 py-2 text-base font-semibold ${penClass}`}>{penText}</p>
+            {captureButton}
+            <p className="text-sm text-neutral-500">{describeReference(readout.reference)}</p>
+            <Toggle
+              label="Show the cap and the shadow it found"
+              checked={showShadow}
+              onChange={setShowShadow}
+            />
+            <dl className="flex flex-col gap-1.5">
+              <Row
+                label="Tip of the cap (camera pixels)"
+                value={readout.penTip ? `${Math.round(readout.penTip.x)}, ${Math.round(readout.penTip.y)}` : "–"}
+              />
+              <Row label="Cap width (camera pixels)" value={show(readout.penWidth, 1)} />
+              <Row label="Gap from the tip to its shadow (cap widths)" value={show(readout.penGap, 2)} />
+              <Row
+                label="Tip of the shadow"
+                value={readout.penGap === null ? "–" : readout.penShadowHidden ? "under the cap" : "in view"}
+              />
+              <Row label="Shadow pixels near the tip" value={show(readout.penShadowPixels)} />
+              <Row
+                label="Exposure change since the empty board"
+                value={readout.gain === null ? "–" : `×${readout.gain.toFixed(2)}`}
+              />
+              <Row label="Flicker bands (taken out)" value={showPercent(readout.flicker)} />
+            </dl>
+            {traceCanvas}
+            <p className="text-xs text-neutral-500">
+              The line is the gap between the tip of the cap and its shadow, over the last 6
+              seconds (0 at the bottom, 1.5 cap widths at the top). A touch starts below the green
+              dashed line and ends above the amber one. Green bands are the times it counted as
+              touching.
+            </p>
+
+            <div className="flex items-center justify-between text-sm">
+              <label htmlFor={penTouchBelowId} className="font-medium">
+                Touching when the gap is less than
+              </label>
+              <span className="tabular-nums text-neutral-500">{penTouchBelow.toFixed(2)}</span>
+            </div>
+            <input
+              id={penTouchBelowId}
+              type="range"
+              min={0.02}
+              max={1}
+              step={0.01}
+              value={penTouchBelow}
+              onChange={(e) => setPenTouchBelow(Number(e.target.value))}
+              className="h-8 w-full cursor-pointer accent-neutral-900"
+            />
+            <div className="flex items-center justify-between text-sm">
+              <label htmlFor={shadowRatioId} className="font-medium">
+                Shadow is darker than
+              </label>
+              <span className="tabular-nums text-neutral-500">{Math.round(shadowRatio * 100)}%</span>
+            </div>
+            <input
+              id={shadowRatioId}
+              type="range"
+              min={0.3}
+              max={0.95}
+              step={0.01}
+              value={shadowRatio}
+              onChange={(e) => setShadowRatio(Number(e.target.value))}
+              className="h-8 w-full cursor-pointer accent-neutral-900"
+            />
+            <div className="flex items-center justify-between text-sm">
+              <label htmlFor={blueGainId} className="font-medium">
+                Cap: bluer than the board by at least
+              </label>
+              <span className="tabular-nums text-neutral-500">{blueGain.toFixed(2)}</span>
+            </div>
+            <input
+              id={blueGainId}
+              type="range"
+              min={0.03}
+              max={0.3}
+              step={0.01}
+              value={blueGain}
+              onChange={(e) => setBlueGain(Number(e.target.value))}
+              className="h-8 w-full cursor-pointer accent-neutral-900"
+            />
+
+            <p className="text-sm text-neutral-500">
+              Hold a whiteboard marker with its blue cap on like a pen, and touch the board with
+              the tip of the cap. Take your hand away and press Capture first. The cap is found by
+              its color (painted blue on the picture) and the shadow next to it (cyan), which is
+              darker than the empty board. The white line runs along the cap to its tip (ring), the
+              cyan line along its shadow, and the amber line goes from the tip of the cap to the tip
+              of the shadow: that is the gap. When the tip touches the board, the two lines meet at
+              the tip like a V and the gap drops to about 0; it grows as the tip lifts. Hold the pen
+              so that its shadow is not hidden right behind it. The cap is what is clearly bluer
+              than the empty board at the same spot (through the camera the gray board can look
+              lavender, and the panel has blue buttons), so it is only found once the empty board
+              has been captured. If parts of the cap are not painted blue, lower the last slider;
+              if parts of the board are, raise it. Keep other blue things (a sleeve, blue writing
+              that is not on the empty board yet) away from your hand.
+            </p>
+          </Section>
+        )}
 
         <Section title="Hand tracking">
           <p
@@ -1897,232 +2449,223 @@ export function CameraTest() {
           </p>
         </Section>
 
-        <Section title="Writing pose">
-          <p className={`rounded-lg px-3 py-2 text-sm font-medium ${poseClass}`}>{poseText}</p>
-          <div className="grid grid-cols-4 gap-2 text-center text-sm">
-            {FINGER_NAMES.map((name) => {
-              const reach = readout.reach?.[name] ?? null;
-              // The index finger should be the long one; the others should be short next to it.
-              const isShort =
-                reach !== null && readout.reach !== null && name !== "index"
-                  ? reach <= readout.reach.index * othersShorter
-                  : null;
-              return (
-                <div
-                  key={name}
-                  className={`rounded-lg border px-1 py-1.5 ${
-                    reach === null
-                      ? "border-neutral-200 text-neutral-400"
-                      : name === "index" || isShort
-                        ? "border-emerald-300 bg-emerald-50 text-emerald-900"
-                        : "border-amber-300 bg-amber-50 text-amber-900"
-                  }`}
+        {pointerKind === "finger" && (
+          <>
+            <Section title="Writing pose">
+              <p className={`rounded-lg px-3 py-2 text-sm font-medium ${poseClass}`}>{poseText}</p>
+              <div className="grid grid-cols-4 gap-2 text-center text-sm">
+                {FINGER_NAMES.map((name) => {
+                  const reach = readout.reach?.[name] ?? null;
+                  // The index finger should be the long one; the others should be short next to it.
+                  const isShort =
+                    reach !== null && readout.reach !== null && name !== "index"
+                      ? reach <= readout.reach.index * othersShorter
+                      : null;
+                  return (
+                    <div
+                      key={name}
+                      className={`rounded-lg border px-1 py-1.5 ${
+                        reach === null
+                          ? "border-neutral-200 text-neutral-400"
+                          : name === "index" || isShort
+                            ? "border-emerald-300 bg-emerald-50 text-emerald-900"
+                            : "border-amber-300 bg-amber-50 text-amber-900"
+                      }`}
+                    >
+                      <div className="text-xs capitalize">{name}</div>
+                      <div className="font-medium tabular-nums">{show(reach, 2)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex items-center justify-between text-sm">
+                <label htmlFor={othersShorterId} className="font-medium">
+                  Other fingers shorter than
+                </label>
+                <span className="tabular-nums text-neutral-500">
+                  {Math.round(othersShorter * 100)}% of the index
+                </span>
+              </div>
+              <input
+                id={othersShorterId}
+                type="range"
+                min={0.3}
+                max={0.95}
+                step={0.01}
+                value={othersShorter}
+                onChange={(e) => setOthersShorter(Number(e.target.value))}
+                className="h-8 w-full cursor-pointer accent-neutral-900"
+              />
+              <dl>
+                <Row label="Hand in this pose (last 2 s)" value={showPercent(readout.pointingShare)} />
+              </dl>
+              <p className="text-sm text-neutral-500">
+                Writing is only allowed with the index finger out and the middle, ring and little
+                fingers curled. The number under each finger is how far its tip is from its knuckle in
+                the picture, in hand sizes: a finger held out is long and a curled one is short. It
+                works from the back of the hand and from the palm. The thumb is ignored. Raise the
+                slider if your 👆 is not recognized, lower it if a fist or a pinch is. This only checks
+                the shape of the hand, not whether it touches the board: that is decided from the
+                shadow, below.
+              </p>
+            </Section>
+
+            <Section title="Shadow touch">
+              <p
+                className={`rounded-lg px-3 py-2 text-base font-semibold ${
+                  writing ? "bg-emerald-600 text-white" : "bg-neutral-200 text-neutral-700"
+                }`}
+              >
+                {writing
+                  ? "✍️ Writing: 👆 and touching"
+                  : readout.touching
+                    ? "Touching, but not in the 👆 pose: no writing"
+                    : "Not writing"}
+              </p>
+              <p className={`rounded-lg px-3 py-2 text-sm font-medium ${touchClass}`}>{touchText}</p>
+
+              {captureButton}
+              <p className="text-sm text-neutral-500">{describeReference(readout.reference)}</p>
+              <Toggle
+                label="Show the shadow it found and where it looks"
+                checked={showShadow}
+                onChange={setShowShadow}
+              />
+
+              <dl className="flex flex-col gap-1.5">
+                <Row label="Shadow past the fingertip (hand sizes)" value={show(readout.gap, 2)} />
+                <Row label="Shadow pixels around the hand" value={show(readout.shadowPixels)} />
+                <Row label="Skin-colored pixels set aside" value={show(readout.skinPixels)} />
+                <Row
+                  label="Exposure change since the empty board"
+                  value={readout.gain === null ? "–" : `×${readout.gain.toFixed(2)}`}
+                />
+                <Row label="Flicker bands (taken out)" value={showPercent(readout.flicker)} />
+              </dl>
+
+              {traceCanvas}
+              <p className="text-xs text-neutral-500">
+                The line is how far the shadow reaches past your fingertip, over the last 6 seconds (0
+                at the bottom, 1.5 at the top). A touch starts below the green dashed line and ends
+                above the amber one. Green bands are the times it counted as touching.
+              </p>
+
+              <div className="flex items-center justify-between text-sm">
+                <label htmlFor={touchBelowId} className="font-medium">
+                  Touching when the shadow reaches less than
+                </label>
+                <span className="tabular-nums text-neutral-500">{touchBelow.toFixed(2)}</span>
+              </div>
+              <input
+                id={touchBelowId}
+                type="range"
+                min={0.02}
+                max={1}
+                step={0.01}
+                value={touchBelow}
+                onChange={(e) => setTouchBelow(Number(e.target.value))}
+                className="h-8 w-full cursor-pointer accent-neutral-900"
+              />
+              <div className="flex items-center justify-between text-sm">
+                <label htmlFor={shadowRatioId} className="font-medium">
+                  Shadow is darker than
+                </label>
+                <span className="tabular-nums text-neutral-500">{Math.round(shadowRatio * 100)}%</span>
+              </div>
+              <input
+                id={shadowRatioId}
+                type="range"
+                min={0.3}
+                max={0.95}
+                step={0.01}
+                value={shadowRatio}
+                onChange={(e) => setShadowRatio(Number(e.target.value))}
+                className="h-8 w-full cursor-pointer accent-neutral-900"
+              />
+              <div className="flex items-center justify-between text-sm">
+                <label htmlFor={handMarginId} className="font-medium">
+                  Hand margin
+                </label>
+                <span className="tabular-nums text-neutral-500">{handMargin.toFixed(2)}</span>
+              </div>
+              <input
+                id={handMarginId}
+                type="range"
+                min={0}
+                max={0.6}
+                step={0.01}
+                value={handMargin}
+                onChange={(e) => setHandMargin(Number(e.target.value))}
+                className="h-8 w-full cursor-pointer accent-neutral-900"
+              />
+              <div className="flex items-center justify-between text-sm">
+                <label htmlFor={skinToleranceId} className="font-medium">
+                  Skin color tolerance
+                </label>
+                <span className="tabular-nums text-neutral-500">
+                  {skinTolerance === 0 ? "off" : skinTolerance.toFixed(3)}
+                </span>
+              </div>
+              <input
+                id={skinToleranceId}
+                type="range"
+                min={0}
+                max={0.2}
+                step={0.005}
+                value={skinTolerance}
+                onChange={(e) => setSkinTolerance(Number(e.target.value))}
+                className="h-8 w-full cursor-pointer accent-neutral-900"
+              />
+
+              <p className="text-sm text-neutral-500">
+                Take your hand away from the board, press Capture, and keep still for a moment. Then
+                touch the board with your finger and lift it, and watch the line: it should drop below
+                the green line when you touch and rise above it when you hover. The dashed blue box
+                lies along your finger and only the shadow inside it counts (cyan: pixels darker than
+                the empty board by the set share). The solid blue line across the finger marks your
+                fingertip. When you hover, the shadow reaches past that line, ahead of the fingertip.
+                When you touch, your finger hides its own shadow, so the shadow stops at the line or
+                behind it (the ring at the end of the other line is the far end of the shadow, which
+                then is a bump of your hand&apos;s shadow). This assumes the light comes from behind
+                your hand, so that the shadow falls ahead of the fingertip when it is above the board.
+                Dark pixels that are the color of your skin are set aside (orange), because they are
+                your hand, not a shadow: the skin color is read from your index finger on every frame,
+                and a shadow is more gray than skin. Raise the tolerance if skin still shows up as
+                cyan; lower it (or turn it off) if real shadow turns orange. If the shadow found is
+                not against your hand, or none is found, it does not count as touching, so a hand far
+                above the board is not mistaken for a touch. Raise Hand margin if the pink outline
+                does not cover your skin. Do not write on the board while testing: projected ink is
+                as dark as a shadow.
+              </p>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => requestSnapshot("touching")}
+                  disabled={!live}
+                  className={`${buttonClass} border-neutral-300 bg-white px-2 text-sm text-neutral-900 hover:bg-neutral-100`}
                 >
-                  <div className="text-xs capitalize">{name}</div>
-                  <div className="font-medium tabular-nums">{show(reach, 2)}</div>
-                </div>
-              );
-            })}
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <label htmlFor={othersShorterId} className="font-medium">
-              Other fingers shorter than
-            </label>
-            <span className="tabular-nums text-neutral-500">
-              {Math.round(othersShorter * 100)}% of the index
-            </span>
-          </div>
-          <input
-            id={othersShorterId}
-            type="range"
-            min={0.3}
-            max={0.95}
-            step={0.01}
-            value={othersShorter}
-            onChange={(e) => setOthersShorter(Number(e.target.value))}
-            className="h-8 w-full cursor-pointer accent-neutral-900"
-          />
-          <dl>
-            <Row label="Hand in this pose (last 2 s)" value={showPercent(readout.pointingShare)} />
-          </dl>
-          <p className="text-sm text-neutral-500">
-            Writing is only allowed with the index finger out and the middle, ring and little
-            fingers curled. The number under each finger is how far its tip is from its knuckle in
-            the picture, in hand sizes: a finger held out is long and a curled one is short. It
-            works from the back of the hand and from the palm. The thumb is ignored. Raise the
-            slider if your 👆 is not recognized, lower it if a fist or a pinch is. This only checks
-            the shape of the hand, not whether it touches the board: that is decided from the
-            shadow, below.
-          </p>
-        </Section>
-
-        <Section title="Shadow touch">
-          <p
-            className={`rounded-lg px-3 py-2 text-base font-semibold ${
-              writing ? "bg-emerald-600 text-white" : "bg-neutral-200 text-neutral-700"
-            }`}
-          >
-            {writing
-              ? "✍️ Writing: 👆 and touching"
-              : readout.touching
-                ? "Touching, but not in the 👆 pose: no writing"
-                : "Not writing"}
-          </p>
-          <p className={`rounded-lg px-3 py-2 text-sm font-medium ${touchClass}`}>{touchText}</p>
-
-          <button
-            type="button"
-            onClick={captureReference}
-            disabled={!live}
-            className={`${buttonClass} border-neutral-900 bg-neutral-900 text-white hover:bg-neutral-700`}
-          >
-            Capture empty board (3 s)
-          </button>
-          <p className="text-sm text-neutral-500">{describeReference(readout.reference)}</p>
-          <Toggle
-            label="Show the shadow it found and where it looks"
-            checked={showShadow}
-            onChange={setShowShadow}
-          />
-
-          <dl className="flex flex-col gap-1.5">
-            <Row label="Shadow past the fingertip (hand sizes)" value={show(readout.gap, 2)} />
-            <Row label="Shadow pixels around the hand" value={show(readout.shadowPixels)} />
-            <Row label="Skin-colored pixels set aside" value={show(readout.skinPixels)} />
-            <Row
-              label="Exposure change since the empty board"
-              value={readout.gain === null ? "–" : `×${readout.gain.toFixed(2)}`}
-            />
-          </dl>
-
-          <canvas
-            ref={traceRef}
-            width={640}
-            height={160}
-            role="img"
-            aria-label="The gap between the fingertip and its shadow over the last 6 seconds"
-            className="w-full rounded-lg border border-neutral-200 bg-white"
-          />
-          <p className="text-xs text-neutral-500">
-            The line is how far the shadow reaches past your fingertip, over the last 6 seconds (0
-            at the bottom, 1.5 at the top). A touch starts below the green dashed line and ends
-            above the amber one. Green bands are the times it counted as touching.
-          </p>
-
-          <div className="flex items-center justify-between text-sm">
-            <label htmlFor={touchBelowId} className="font-medium">
-              Touching when the shadow reaches less than
-            </label>
-            <span className="tabular-nums text-neutral-500">{touchBelow.toFixed(2)}</span>
-          </div>
-          <input
-            id={touchBelowId}
-            type="range"
-            min={0.02}
-            max={1}
-            step={0.01}
-            value={touchBelow}
-            onChange={(e) => setTouchBelow(Number(e.target.value))}
-            className="h-8 w-full cursor-pointer accent-neutral-900"
-          />
-          <div className="flex items-center justify-between text-sm">
-            <label htmlFor={shadowRatioId} className="font-medium">
-              Shadow is darker than
-            </label>
-            <span className="tabular-nums text-neutral-500">{Math.round(shadowRatio * 100)}%</span>
-          </div>
-          <input
-            id={shadowRatioId}
-            type="range"
-            min={0.3}
-            max={0.95}
-            step={0.01}
-            value={shadowRatio}
-            onChange={(e) => setShadowRatio(Number(e.target.value))}
-            className="h-8 w-full cursor-pointer accent-neutral-900"
-          />
-          <div className="flex items-center justify-between text-sm">
-            <label htmlFor={handMarginId} className="font-medium">
-              Hand margin
-            </label>
-            <span className="tabular-nums text-neutral-500">{handMargin.toFixed(2)}</span>
-          </div>
-          <input
-            id={handMarginId}
-            type="range"
-            min={0}
-            max={0.6}
-            step={0.01}
-            value={handMargin}
-            onChange={(e) => setHandMargin(Number(e.target.value))}
-            className="h-8 w-full cursor-pointer accent-neutral-900"
-          />
-          <div className="flex items-center justify-between text-sm">
-            <label htmlFor={skinToleranceId} className="font-medium">
-              Skin color tolerance
-            </label>
-            <span className="tabular-nums text-neutral-500">
-              {skinTolerance === 0 ? "off" : skinTolerance.toFixed(3)}
-            </span>
-          </div>
-          <input
-            id={skinToleranceId}
-            type="range"
-            min={0}
-            max={0.2}
-            step={0.005}
-            value={skinTolerance}
-            onChange={(e) => setSkinTolerance(Number(e.target.value))}
-            className="h-8 w-full cursor-pointer accent-neutral-900"
-          />
-
-          <p className="text-sm text-neutral-500">
-            Take your hand away from the board, press Capture, and keep still for a moment. Then
-            touch the board with your finger and lift it, and watch the line: it should drop below
-            the green line when you touch and rise above it when you hover. The dashed blue box
-            lies along your finger and only the shadow inside it counts (cyan: pixels darker than
-            the empty board by the set share). The solid blue line across the finger marks your
-            fingertip. When you hover, the shadow reaches past that line, ahead of the fingertip.
-            When you touch, your finger hides its own shadow, so the shadow stops at the line or
-            behind it (the ring at the end of the other line is the far end of the shadow, which
-            then is a bump of your hand&apos;s shadow). This assumes the light comes from behind
-            your hand, so that the shadow falls ahead of the fingertip when it is above the board.
-            Dark pixels that are the color of your skin are set aside (orange), because they are
-            your hand, not a shadow: the skin color is read from your index finger on every frame,
-            and a shadow is more gray than skin. Raise the tolerance if skin still shows up as
-            cyan; lower it (or turn it off) if real shadow turns orange. If the shadow found is
-            not against your hand, or none is found, it does not count as touching, so a hand far
-            above the board is not mistaken for a touch. Raise Hand margin if the pink outline
-            does not cover your skin. Do not write on the board while testing: projected ink is
-            as dark as a shadow.
-          </p>
-
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => requestSnapshot("touching")}
-              disabled={!live}
-              className={`${buttonClass} border-neutral-300 bg-white px-2 text-sm text-neutral-900 hover:bg-neutral-100`}
-            >
-              Save touching snapshot
-            </button>
-            <button
-              type="button"
-              onClick={() => requestSnapshot("hovering")}
-              disabled={!live}
-              className={`${buttonClass} border-neutral-300 bg-white px-2 text-sm text-neutral-900 hover:bg-neutral-100`}
-            >
-              Save hovering snapshot
-            </button>
-          </div>
-          {readout.snapshot && <p className="text-sm text-neutral-700">{readout.snapshot}</p>}
-          <p className="text-xs text-neutral-500">
-            A snapshot saves the camera picture, the empty board and where the hand is, as one file
-            in your Downloads folder, 3 seconds after you press the button so there is time to put
-            your finger in place. Save a few of each (touching the board and hovering above it) so
-            the detection can be tuned on real frames.
-          </p>
-        </Section>
+                  Save touching snapshot
+                </button>
+                <button
+                  type="button"
+                  onClick={() => requestSnapshot("hovering")}
+                  disabled={!live}
+                  className={`${buttonClass} border-neutral-300 bg-white px-2 text-sm text-neutral-900 hover:bg-neutral-100`}
+                >
+                  Save hovering snapshot
+                </button>
+              </div>
+              {readout.snapshot && <p className="text-sm text-neutral-700">{readout.snapshot}</p>}
+              <p className="text-xs text-neutral-500">
+                A snapshot saves the camera picture, the empty board and where the hand is, as one file
+                in your Downloads folder, 3 seconds after you press the button so there is time to put
+                your finger in place. Save a few of each (touching the board and hovering above it) so
+                the detection can be tuned on real frames.
+              </p>
+            </Section>
+          </>
+        )}
 
         <Section title="Brightness probe">
           <Toggle label="Paint dark areas red" checked={maskOn} onChange={setMaskOn} />
