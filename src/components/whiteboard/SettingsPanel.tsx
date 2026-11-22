@@ -2,6 +2,8 @@
 
 import { useId, type ReactNode } from "react";
 import {
+  BRIGHTNESS_LIMITS,
+  BRIGHTNESS_PRESETS,
   COLORS,
   SIZE_LIMITS,
   sizeOf,
@@ -85,7 +87,8 @@ export function SettingsPanel({
   onResetView,
 }: SettingsPanelProps) {
   const sizeId = useId();
-  const { tool, eraserMode, color } = settings;
+  const brightnessId = useId();
+  const { tool, eraserMode, color, boardBrightness } = settings;
 
   // The Move tool has no size.
   const sizedTool: SizedTool | null = tool === "move" ? null : tool;
@@ -262,6 +265,44 @@ export function SettingsPanel({
           />
         </PanelSection>
       )}
+
+      <PanelSection title="Board brightness">
+        <div className="grid grid-cols-4 gap-2">
+          {BRIGHTNESS_PRESETS.map((value) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={boardBrightness === value}
+              onClick={() => onSettingsChange({ boardBrightness: value })}
+              className={`${buttonBase} px-0 text-[15px] ${
+                boardBrightness === value ? buttonActive : buttonIdle
+              }`}
+            >
+              {value}%
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center justify-between text-sm">
+          <label htmlFor={brightnessId} className="font-medium">
+            Brightness
+          </label>
+          <span className="tabular-nums text-neutral-500">{boardBrightness}%</span>
+        </div>
+        <input
+          id={brightnessId}
+          type="range"
+          min={BRIGHTNESS_LIMITS.min}
+          max={BRIGHTNESS_LIMITS.max}
+          step={1}
+          value={boardBrightness}
+          onChange={(e) => onSettingsChange({ boardBrightness: Number(e.target.value) })}
+          className="h-8 w-full cursor-pointer accent-neutral-900"
+        />
+        <p className="text-sm text-neutral-500">
+          A dimmer board glares less, but the finger&apos;s shadow on it is fainter. Find the level
+          where the shadow still shows.
+        </p>
+      </PanelSection>
 
       <PanelSection title="Board">
         <div className="grid grid-cols-2 gap-2">

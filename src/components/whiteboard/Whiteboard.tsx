@@ -19,7 +19,7 @@ import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
 import { MistakeMark } from "./MistakeMark";
 import { SettingsPanel } from "./SettingsPanel";
-import { DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
+import { boardColor, DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
 import type { Point, Stroke, StrokeDraft } from "./strokes";
 import { TEXT_LINE_HEIGHT } from "./text";
 import { TextEditor, type TextEdit } from "./TextEditor";
@@ -302,10 +302,14 @@ export function Whiteboard() {
       <main
         ref={boardRef}
         onWheel={handleWheel}
-        className="relative min-w-0 flex-1 overflow-hidden bg-white"
-        // Faint dots that move with the board, so you can see it scroll even where it is empty.
+        className="relative min-w-0 flex-1 overflow-hidden"
+        // The board can be dimmed to cut projector glare (see BRIGHTNESS_LIMITS). The ink
+        // and the image sent to the AI do not depend on it: that image is always on white.
+        // Faint dots that move with the board, so you can see it scroll even where it is
+        // empty. They are translucent black, so they stay a little darker than any board.
         style={{
-          backgroundImage: "radial-gradient(circle, #d4d4d4 1px, transparent 1.5px)",
+          backgroundColor: boardColor(settings.boardBrightness),
+          backgroundImage: "radial-gradient(circle, rgba(0, 0, 0, 0.17) 1px, transparent 1.5px)",
           backgroundSize: "40px 40px",
           backgroundPosition: `${-view.x}px ${-view.y}px`,
         }}

@@ -22,6 +22,8 @@ export interface WhiteboardSettings {
   eraserSize: number;
   /** Font size for typed text, in pixels. */
   textSize: number;
+  /** How bright the board is, as a percent: 100 is white, lower is a darker gray. */
+  boardBrightness: number;
 }
 
 export const COLORS = [
@@ -38,6 +40,20 @@ export const SIZE_LIMITS = {
   text: { min: 14, max: 96 },
 } as const;
 
+// A white board makes the projector glare. A black one removes the glare but also
+// the finger's shadow, which touch detection needs (docs/02-technical-design.md,
+// section 4). A gray board is in between, so its level can be tuned on site.
+// Tested with the real projector: the glare only becomes acceptable at about 40% or
+// lower, and 35% works well, so that is the default.
+export const BRIGHTNESS_LIMITS = { min: 30, max: 100 } as const;
+export const BRIGHTNESS_PRESETS = [100, 60, 40, 35] as const;
+
+/** The board's background color for a brightness percent (100 is white). */
+export function boardColor(brightness: number): string {
+  const level = Math.round((255 * brightness) / 100);
+  return `rgb(${level}, ${level}, ${level})`;
+}
+
 export const DEFAULT_SETTINGS: WhiteboardSettings = {
   tool: "pen",
   eraserMode: "pixel",
@@ -45,6 +61,7 @@ export const DEFAULT_SETTINGS: WhiteboardSettings = {
   penSize: 4,
   eraserSize: 32,
   textSize: 28,
+  boardBrightness: 35,
 };
 
 /** The size setting that belongs to the selected tool (0 for tools without one). */
