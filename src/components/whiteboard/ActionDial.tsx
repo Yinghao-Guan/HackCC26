@@ -222,8 +222,15 @@ export function ActionDial({ ai, voice, onSolve, onGraph, onCheck, onVoiceToggle
       />
 
       <div ref={rootRef} className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
-        {message && <StatusBubble text={message.text} tone={message.tone} />}
-        {voiceMessage && <StatusBubble {...voiceMessage} />}
+        {/* While the dial is open its actions fan out above the button, so the messages move up
+            out of their way instead of being hidden behind them. */}
+        <div
+          className="flex flex-col items-end gap-3 transition-[margin] duration-300"
+          style={{ marginBottom: open ? RADIUS : 0 }}
+        >
+          {message && <StatusBubble text={message.text} tone={message.tone} />}
+          {voiceMessage && <StatusBubble {...voiceMessage} />}
+        </div>
 
         {/* Sized to the main button; the items are positioned absolutely so they don't
             affect this box's layout, and animate outward from its corner along the arc. */}
