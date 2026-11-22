@@ -5,7 +5,8 @@ Routes:
   /health       status as JSON
   /preview.mjpg live camera view with the frame rate, for setting up
   /debug        a test page that shows the bus and draws what a board page draws
-  /calibrate    the operator page for the manual four-corner calibration
+  /calibrate    the operator page for calibration
+  /gestures     Gesture Lab: try the hand gestures and see what the tracker sees
 """
 
 from __future__ import annotations
@@ -41,8 +42,12 @@ from .events import (
 )
 from .fake import run_fake_pointer
 from .handlers import handle_message
+from .hands import HandTracker
+from .models import ensure_hand_model
+from .ports import quiet_connection_resets
 from .preview import annotate, encode_jpeg
 from .state import ServerState
+from .tracking import Tracker, TrackingLoop
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +57,7 @@ PREVIEW_STALL_SECONDS = 5.0
 POLICY_VIOLATION = 1008  # WebSocket close code
 
 CameraFactory = Callable[[Config, StatusListener], Camera]
+TrackerFactory = Callable[[], Tracker]
 
 
 def _default_camera(config: Config, on_status: StatusListener) -> Camera:
@@ -79,6 +85,11 @@ def _status_to_event(status: dict[str, Any]) -> dict[str, Any]:
     return camera_status_event(status["status"], message=status["message"], details=details)
 
 
+def _default_tracker() -> Tracker:
+    """Runs on the tracking thread: downloads the model the first time, then loads it."""
+    return HandTracker.from_model(ensure_hand_model())
+
+
 def _load_saved_calibration(state: ServerState) -> None:
     try:
         saved = load_calibration(state.config.data_dir)
@@ -93,7 +104,11 @@ def _load_saved_calibration(state: ServerState) -> None:
     state.remember_announced(state.calibration_event())
 
 
-def create_app(config: Config, camera_factory: CameraFactory = _default_camera) -> FastAPI:
+def create_app(
+    config: Config,
+    camera_factory: CameraFactory = _default_camera,
+    tracker_factory: TrackerFactory = _default_tracker,
+) -> FastAPI:
     state = ServerState(config)
     bus = state.bus
 
@@ -105,6 +120,7 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         bus.attach_loop(asyncio.get_running_loop())
+        asyncio.get_running_loop().set_exception_handler(quiet_connection_resets)
         _load_saved_calibration(state)
         if config.camera_enabled:
             loop = asyncio.get_running_loop()
@@ -123,6 +139,11 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
             except CameraError as error:
                 # Keep serving: the UI shows the error and the fake pointer still works.
                 log.error("%s", error)
+            if config.gestures and camera.status()["status"] == "ok":
+                state.tracking = TrackingLoop(
+                    camera, tracker_factory, bus.publish_threadsafe, state.calibration.current
+                )
+                state.tracking.start()
 
         fake_task = None
         if config.fake_pointer:
@@ -137,8 +158,16 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
                         await task
+            if state.tracking is not None:
+                await asyncio.to_thread(state.tracking.stop)
             if state.camera is not None:
                 await asyncio.to_thread(state.camera.stop)
+
+    # The service's own pages (/debug, /calibrate, /gestures) are always allowed,
+    # whatever port it runs on.
+    allowed_origins = set(config.allowed_origins) | {
+        f"http://{host}:{config.port}" for host in ("127.0.0.1", "localhost", config.host)
+    }
 
     app = FastAPI(title="HackCC26 CV service", version=__version__, lifespan=lifespan)
     # Only answer requests addressed to this machine by name. Without this, a web page
@@ -155,6 +184,7 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
             "version": __version__,
             "camera": camera_status(),
             "calibration": state.calibration_event(),
+            "tracking": state.tracking.status() if state.tracking else {"status": "off", "message": ""},
             "clients": bus.client_count,
             "fake_pointer": config.fake_pointer,
             "display": {"width": display.width, "height": display.height, "dpr": display.dpr},
@@ -167,6 +197,10 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
     @app.get("/debug", response_class=HTMLResponse)
     async def debug_page() -> str:
         return (STATIC / "debug.html").read_text(encoding="utf-8")
+
+    @app.get("/gestures", response_class=HTMLResponse)
+    async def gestures_page() -> str:
+        return (STATIC / "gestures.html").read_text(encoding="utf-8")
 
     @app.get("/calibrate", response_class=HTMLResponse)
     async def calibrate_page() -> str:
@@ -200,7 +234,7 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
     @app.websocket("/ws")
     async def events(websocket: WebSocket) -> None:
         origin = websocket.headers.get("origin")
-        if origin is not None and origin not in config.allowed_origins:
+        if origin is not None and origin not in allowed_origins:
             log.warning("Refused a WebSocket from %s", origin)
             await websocket.close(code=POLICY_VIOLATION)
             return
@@ -211,6 +245,8 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
         try:
             await client.send_json(_status_to_event(camera_status()))
             await client.send_json(state.calibration_event())
+            if state.tracking is not None:  # only when hand tracking was started
+                await client.send_json({"type": "tracking", **state.tracking.status()})
             await _serve(websocket, client, state)
         except WebSocketDisconnect:
             pass
