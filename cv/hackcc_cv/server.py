@@ -153,7 +153,7 @@ def create_app(
             yield
         finally:
             state.shutting_down = True
-            for task in (fake_task, state.auto_task):
+            for task in (fake_task, state.auto_task, state.read_task):
                 if task is not None and not task.done():
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
