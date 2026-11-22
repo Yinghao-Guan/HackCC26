@@ -10,6 +10,10 @@ const MODEL = "claude-opus-5-5";
 const DATA_URL_PREFIX = "data:image/png;base64,";
 const MAX_IMAGE_CHARS = 6_000_000; // the API accepts images up to 5 MB
 
+/** True for a PNG data URL of a size the API accepts. */
+const isBoardImage = (value: unknown): value is string =>
+  typeof value === "string" && value.startsWith(DATA_URL_PREFIX) && value.length <= MAX_IMAGE_CHARS;
+
 export type Outcome<T> = { ok: true; value: T } | { ok: false; response: Response };
 
 export function fail(error: string, status: number): Response {
@@ -32,11 +36,7 @@ export async function readBoardRequest(
 
   const image =
     typeof body === "object" && body !== null && "image" in body ? body.image : null;
-  if (
-    typeof image !== "string" ||
-    !image.startsWith(DATA_URL_PREFIX) ||
-    image.length > MAX_IMAGE_CHARS
-  ) {
+  if (!isBoardImage(image)) {
     return {
       ok: false,
       response: fail("Send the board as a PNG image data URL (under 5 MB).", 400),
@@ -45,18 +45,54 @@ export async function readBoardRequest(
   return { ok: true, value: { image, body: body as Record<string, unknown> } };
 }
 
+const MAX_QUESTION_CHARS = 500;
+
+/**
+ * Get a spoken question (and, if there is something written on the board, its image) out of
+ * a request, or an error response to send back.
+ */
+export async function readQuestionRequest(
+  request: Request,
+): Promise<Outcome<{ question: string; image: string | null }>> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return { ok: false, response: fail("The request body must be JSON.", 400) };
+  }
+
+  const fields = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {};
+  const question = typeof fields.question === "string" ? fields.question.trim() : "";
+  if (question === "" || question.length > MAX_QUESTION_CHARS) {
+    return {
+      ok: false,
+      response: fail(`Send the question as text, 1 to ${MAX_QUESTION_CHARS} characters.`, 400),
+    };
+  }
+
+  const image = fields.image ?? null;
+  if (image !== null && !isBoardImage(image)) {
+    return {
+      ok: false,
+      response: fail("Send the board as a PNG image data URL (under 5 MB), or leave it out.", 400),
+    };
+  }
+  return { ok: true, value: { question, image } };
+}
+
 interface AskOptions {
   /** Tells Claude what to do with the board. */
   system: string;
   /** The JSON shape Claude must reply in. */
   schema: Record<string, unknown>;
-  image: string;
+  /** The board as an image, or null when there is nothing to show. */
+  image: string | null;
   /** The short request sent along with the image. */
   instruction: string;
 }
 
 /**
- * Show Claude the board and get its reply as JSON in the shape of `schema`. The
+ * Show Claude the board (if there is an image) and get its reply as JSON in the shape of `schema`. The
  * JSON is not checked here; the caller should validate it. On failure, this
  * gives an error response that is fine to send to the browser.
  */
@@ -85,15 +121,19 @@ export async function askAboutBoard({
         {
           role: "user",
           content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: "image/png",
-                data: image.slice(DATA_URL_PREFIX.length),
-              },
-            },
-            { type: "text", text: instruction },
+            ...(image
+              ? [
+                  {
+                    type: "image" as const,
+                    source: {
+                      type: "base64" as const,
+                      media_type: "image/png" as const,
+                      data: image.slice(DATA_URL_PREFIX.length),
+                    },
+                  },
+                ]
+              : []),
+            { type: "text" as const, text: instruction },
           ],
         },
       ],

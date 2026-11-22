@@ -45,6 +45,16 @@ If an equation uses `z`, **Graph** shows a 3D view instead: surfaces such as `z 
 
 Write a problem and your worked steps, one step per line, and press **Check**. The board's ink is split into lines on your machine and sent to Claude (through `src/app/api/check/`) with a red number beside each line. Claude finds the **first** step that does not follow, says why, shows how that line should read, carries on to the right answer, and the wrong line is circled on the board with a **Step N** tag. If all the steps are right, it says so instead. Because the line numbers come from our own line-splitting, the circle always lands on the line Claude meant. Leave a little space between lines so they can be told apart.
 
+## Voice: talk to the board
+
+Tap **Speak** in the side panel and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in the panel as you say them, and when you pause it runs the matching button on what is on screen. Tap the button again to stop early.
+
+You can also **ask a question**, such as "give me an example question on the chain rule" or "explain how to differentiate this". Anything you say that isn't one of the commands above (and is at least three words) goes to Claude through `src/app/api/ask/`. If something is written on screen, an image of it goes along, so "explain this step" works; with an empty board only the question is sent. The answer is written on the board as a card with the question, short explanations and formulas shown with KaTeX. Sentences that start with *how, why, explain, describe, define, tell me, give me* or *teach me* are always treated as questions, even if they contain a word like "solve" ("how do I solve a quadratic" explains; "solve this" solves).
+
+This uses the browser's own speech recognition (the Web Speech API), so it needs no API key, no server route and no account. It works in Chrome, Edge and Safari, not Firefox. In Chrome the audio is processed by Google's speech service (Apple's in Safari), so it needs an internet connection, and the page must be on `localhost` or `https`. The app never records or stores audio itself. It listens for English; the browser asks for microphone permission the first time.
+
+Which command was meant is worked out on your machine by matching the words (`src/lib/voice.ts`), so commands need no AI call and no extra waiting (only questions go to Claude, and take a few seconds). If several commands are mentioned, the first one wins. The listening code is `src/components/whiteboard/useSpeechRecognition.ts`.
+
 ## Scripts
 
 | Command | What it does |
@@ -61,7 +71,8 @@ src/app/                    App Router: layout, pages, global styles
 src/app/api/solve/          Server route: reads the board image and solves it
 src/app/api/graph/          Server route: reads the board image and lists the curves or surfaces to graph
 src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
-src/components/whiteboard/  Drawing canvas, stroke model, settings panel, answer, graph (2D and 3D) and check cards
+src/app/api/ask/            Server route: answers a spoken question (with the board image, if there is writing)
+src/components/whiteboard/  Drawing canvas, stroke model, settings panel, voice input, answer, graph (2D and 3D) and check cards
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```

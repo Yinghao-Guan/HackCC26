@@ -1,3 +1,4 @@
+import { parseAskResult, type AskResult } from "@/lib/ask";
 import { parseCheckResult, type CheckResult } from "@/lib/check";
 import { parseGraphResult, type GraphResult } from "@/lib/graph";
 import { parseSolveResult, type SolveResult } from "@/lib/solve";
@@ -8,8 +9,14 @@ export type AiAction = "solve" | "graph" | "check";
 /** What the panel shows under the AI buttons. */
 export type AiStatus =
   | { state: "idle" }
-  | { state: "loading"; action: AiAction }
+  | { state: "loading"; action: AiAction | "ask" }
   | { state: "message"; tone: "info" | "error"; text: string };
+
+/** What the panel shows under the mic button. `heard` is what has been made out of the speech so far. */
+export type VoiceStatus =
+  | { state: "idle" }
+  | { state: "listening"; heard?: string }
+  | { state: "message"; tone: "info" | "error"; text: string; heard?: string };
 
 const REQUEST_TIMEOUT_MS = 90_000;
 
@@ -58,6 +65,16 @@ export async function requestSolve(image: string): Promise<SolveResult> {
 /** Have the AI read the equations on the board and say how to graph them. */
 export async function requestGraph(image: string): Promise<GraphResult> {
   const result = parseGraphResult(await post("/api/graph", { image }));
+  if (!result) throw new Error(UNEXPECTED_FORMAT);
+  return result;
+}
+
+/**
+ * Ask the AI a question. If something is written on the board, pass its image, in case
+ * the question is about it.
+ */
+export async function requestAsk(question: string, image: string | null): Promise<AskResult> {
+  const result = parseAskResult(await post("/api/ask", { question, image }));
   if (!result) throw new Error(UNEXPECTED_FORMAT);
   return result;
 }

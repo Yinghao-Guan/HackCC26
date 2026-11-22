@@ -1,3 +1,4 @@
+import type { ReplyBlock } from "@/lib/ask";
 import type {
   GraphCurve,
   GraphPoint,
@@ -10,6 +11,7 @@ import {
   checkCardSize,
   graph3dCardSize,
   graphCardSize,
+  replyCardSize,
   type Rect,
   type Size,
 } from "./layout";
@@ -64,15 +66,29 @@ export interface CheckCardData extends Placed {
   answer: string;
 }
 
+/** The AI's answer to a question asked out loud. */
+export interface ReplyCardData extends Placed {
+  kind: "reply";
+  /** What was asked, as it was heard. */
+  question: string;
+  blocks: ReplyBlock[];
+}
+
 /** Something the AI wrote on the board next to your writing. */
-export type BoardCard = AnswerCardData | GraphCardData | Graph3DCardData | CheckCardData;
+export type BoardCard =
+  | AnswerCardData
+  | GraphCardData
+  | Graph3DCardData
+  | CheckCardData
+  | ReplyCardData;
 
 /** A card before it has an id and a place on the board. */
 export type CardContent =
   | Omit<AnswerCardData, keyof Placed>
   | Omit<GraphCardData, keyof Placed>
   | Omit<Graph3DCardData, keyof Placed>
-  | Omit<CheckCardData, keyof Placed>;
+  | Omit<CheckCardData, keyof Placed>
+  | Omit<ReplyCardData, keyof Placed>;
 
 /** Roughly how big a card is on the board. */
 export function cardSize(card: CardContent | BoardCard): Size {
@@ -85,6 +101,8 @@ export function cardSize(card: CardContent | BoardCard): Size {
       return graph3dCardSize(card.surfaces.length, card.points.length);
     case "check":
       return checkCardSize(card.steps.length);
+    case "reply":
+      return replyCardSize(card.question, card.blocks);
   }
 }
 

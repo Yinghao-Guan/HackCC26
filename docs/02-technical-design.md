@@ -29,7 +29,7 @@ flowchart LR
   end
 
   subgraph D["D · AI"]
-    D1["ElevenLabs STT / TTS"]
+    D1["Voice: speech to text<br/>(browser speech recognition)"]
     D2["Multimodal model:<br/>handwriting to LaTeX, error finding"]
     D3["Solver and checker<br/>(LLM + sympy)"]
   end
@@ -166,7 +166,8 @@ For each new output (plot, solution text, circle), C picks a free rectangle near
 | Printed or marker-written equations | Rectified camera crop (from section 6) to the same model |
 | Plot a 2D function | Parse LaTeX, plot with a JS plotting library (Plotly, function-plot or mathjs; team's choice) |
 | 3D plot of equations | three.js (or Plotly 3D) with orbit, zoom, pan controls |
-| Voice | ElevenLabs speech to text for commands, text to speech for replies (a hackathon sponsor) |
+| Voice | Speech to text for commands with the browser's built-in speech recognition (Web Speech API: no key or server, works in Chrome, Edge and Safari, needs the internet in Chrome). Text to speech for replies is still to be chosen (the browser's speech synthesis is the free option) |
+| Spoken question | The transcribed question, plus the board image when there is writing on screen, goes to the model. It answers as short text and formula blocks, shown on the board as a card. Sentences that are not board commands are treated as questions |
 | Solve | LLM produces steps, one per line; render with KaTeX. Verify the final answer with `sympy` where possible |
 | Find the wrong step | Model returns the step number, a short explanation, a corrected continuation and a bounding box of the wrong step; B converts the box to projector coordinates; C draws the circle |
 
@@ -216,7 +217,7 @@ Transport: WebSocket, JSON messages. All positions in projector pixels. Build a 
 | Camera input | iPhone via Continuity Camera on the MacBook; wired is preferred (to verify) |
 | Backend and bus | Python with FastAPI/WebSocket, or Node; one process publishes events |
 | Frontend | Web app on the projector display: canvas for ink, three.js, Plotly or mathjs, KaTeX |
-| AI | A multimodal model API for vision and solving, `sympy` for checking, ElevenLabs for voice |
+| AI | A multimodal model API for vision and solving, `sympy` for checking, the browser's speech recognition for voice |
 
 ## 12. Open technical questions
 

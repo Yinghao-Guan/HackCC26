@@ -10,7 +10,7 @@ import {
   type Tool,
   type WhiteboardSettings,
 } from "./settings";
-import type { AiStatus } from "./ai";
+import type { AiStatus, VoiceStatus } from "./ai";
 import { TEXT_FONT_FAMILY } from "./text";
 
 interface SettingsPanelProps {
@@ -20,9 +20,11 @@ interface SettingsPanelProps {
   canClear: boolean;
   canResetView: boolean;
   ai: AiStatus;
+  voice: VoiceStatus;
   onSolve: () => void;
   onGraph: () => void;
   onCheck: () => void;
+  onVoiceToggle: () => void;
   onUndo: () => void;
   onClear: () => void;
   onResetView: () => void;
@@ -77,9 +79,11 @@ export function SettingsPanel({
   canClear,
   canResetView,
   ai,
+  voice,
   onSolve,
   onGraph,
   onCheck,
+  onVoiceToggle,
   onUndo,
   onClear,
   onResetView,
@@ -142,11 +146,60 @@ export function SettingsPanel({
               ? "Reading your equations and drawing the graph. This can take a few seconds."
               : ai.action === "check"
                 ? "Reading your steps and checking each one. This can take a few seconds."
-                : "Reading your handwriting and solving it. This can take a few seconds."
+                : ai.action === "ask"
+                  ? "Thinking about your question. This can take a few seconds."
+                  : "Reading your handwriting and solving it. This can take a few seconds."
             : ai.state === "message"
               ? ai.text
               : "Solve works out the answer. Graph draws equations in 2D or 3D (typed ones instantly). Check finds the first mistake in your steps."}
         </p>
+      </PanelSection>
+
+      <PanelSection title="Voice">
+        <button
+          type="button"
+          onClick={onVoiceToggle}
+          aria-pressed={voice.state === "listening"}
+          className={`flex h-14 items-center justify-center gap-2 rounded-lg text-lg font-semibold text-white transition-colors ${
+            voice.state === "listening"
+              ? "animate-pulse bg-red-600 hover:bg-red-700"
+              : "bg-neutral-900 hover:bg-neutral-700"
+          }`}
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            className="size-6"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 11a7 7 0 0 0 14 0M12 18v4" />
+          </svg>
+          {voice.state === "listening" ? "Listening… tap to stop" : "Speak"}
+        </button>
+        <div
+          role="status"
+          className={`flex flex-col gap-1 text-sm ${
+            voice.state === "message" && voice.tone === "error" ? "text-red-700" : "text-neutral-500"
+          }`}
+        >
+          {(voice.state === "listening" || voice.state === "message") && voice.heard && (
+            <p className="italic text-neutral-800">
+              {voice.state === "listening" ? "Hearing" : "Heard"}: “{voice.heard}”
+            </p>
+          )}
+          <p>
+            {voice.state === "listening"
+              ? "Say what you want. It stops when you pause, or tap again."
+              : voice.state === "message"
+                ? voice.text
+                : "Tap Speak, then say “solve this”, “graph this” or “check my work”. Or ask a question, like “explain the chain rule”."}
+          </p>
+        </div>
       </PanelSection>
 
       <PanelSection title="Tool">

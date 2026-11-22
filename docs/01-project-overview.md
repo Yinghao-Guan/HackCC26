@@ -15,7 +15,7 @@ Any whiteboard becomes an interactive, AI-assisted teaching surface with a proje
 | Official schedule | Day 1 10:00 to day 2 21:00 (about 35 hours, including check-in, opening ceremony, demos, judging and awards) |
 | Real hacking time | Not confirmed. We plan for about 20 hours of effective development |
 | Team | 4 people, all building this project together |
-| Sponsor tool we will use | ElevenLabs (speech to text and text to speech) |
+| Sponsor tool we will use | None required. ElevenLabs is no longer a sponsor, so voice uses the browser's built-in speech recognition |
 
 ## 3. What changed from the earlier idea
 
