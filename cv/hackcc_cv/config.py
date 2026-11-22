@@ -44,6 +44,8 @@ class Config:
     fake_pointer: bool = False
     # Hand tracking and gestures (needs the camera and the hand model).
     gestures: bool = True
+    # Recalibrate by itself when the printed markers show the camera moved.
+    auto_recalibrate: bool = True
     # Browser pages allowed to open the WebSocket. Tools without an Origin header are allowed.
     allowed_origins: tuple[str, ...] = DEFAULT_ORIGINS
     # Where calibrations are saved (git-ignored; per machine and setup).
@@ -88,6 +90,7 @@ def _from_env(env: Mapping[str, str]) -> dict[str, Any]:
         "CV_FPS": ("fps", lambda n, r: _int(n, r, 1, 240)),
         "CV_FAKE_POINTER": ("fake_pointer", _bool),
         "CV_GESTURES": ("gestures", _bool),
+        "CV_AUTO_RECALIBRATE": ("auto_recalibrate", _bool),
         "CV_DATA_DIR": ("data_dir", lambda n, r: Path(r.strip())),
         "CV_ALLOWED_ORIGINS": (
             "allowed_origins",
@@ -112,6 +115,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--fake", action="store_true", help="publish a fake finger")
     parser.add_argument("--no-camera", action="store_true", help="run without opening a camera")
     parser.add_argument("--no-gestures", action="store_true", help="no hand tracking or gestures")
+    parser.add_argument("--no-auto-recalibrate", action="store_true", help="only warn when the camera moves")
     return parser
 
 
@@ -125,7 +129,7 @@ def load_config(
     overrides: dict[str, Any] = {
         key: value
         for key, value in vars(args).items()
-        if key not in ("fake", "no_camera", "no_gestures") and value is not None
+        if key not in ("fake", "no_camera", "no_gestures", "no_auto_recalibrate") and value is not None
     }
     if args.fake:
         overrides["fake_pointer"] = True
@@ -133,6 +137,8 @@ def load_config(
         overrides["camera_enabled"] = False
     if args.no_gestures:
         overrides["gestures"] = False
+    if args.no_auto_recalibrate:
+        overrides["auto_recalibrate"] = False
 
     # Re-check numbers that came from the command line the same way as env values.
     for attr, name, low, high in (
