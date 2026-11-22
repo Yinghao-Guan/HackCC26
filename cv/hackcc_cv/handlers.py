@@ -7,17 +7,22 @@ import logging
 import math
 from typing import Any, Protocol
 
+from .aruco import detect_markers, make_detector
 from .auto_calibration import run_auto_calibration
+from .board_reader import run_board_read
 from .calibration import Calibration, manual_targets
+from .drift import StaticMarker, static_markers_in
 from .events import (
     CalibrateAuto,
     CancelCalibration,
     ClientMessage,
+    FlashShown,
     Hello,
     ManualCalibration,
     MapPoint,
     PatternShown,
     Ping,
+    ReadBoard,
     StartManualCalibration,
     calibration_probe_event,
     calibration_targets_event,
@@ -37,7 +42,7 @@ from .state import ServerState
 log = logging.getLogger(__name__)
 
 PROBE_MARGIN = 1.0  # a check cross may land up to one board size beyond each edge
-BUSY = "A calibration is already running. Wait for it, or press Cancel."
+BUSY = "The board is busy (calibrating or reading). Wait for it, or press Cancel."
 
 
 class Sender(Protocol):
@@ -68,6 +73,15 @@ async def handle_message(message: ClientMessage, client: Sender, state: ServerSt
         # Only a reply to the pattern on show now counts, not one from an earlier try.
         if message.run == state.pattern_run:
             state.pattern_shown.set()
+    elif isinstance(message, ReadBoard):
+        if state.calibration_running():
+            await client.send_json(error_event(BUSY))
+            return
+        state.read_task = asyncio.create_task(run_board_read(state, message.bbox))
+        state.read_task.add_done_callback(_report_crash)
+    elif isinstance(message, FlashShown):
+        if message.run == state.flash_run:  # only the white area on show now counts
+            state.flash_shown.set()
     elif isinstance(message, MapPoint):
         await _map_point(message, client, state)
 
@@ -81,9 +95,9 @@ def _report_crash(task: asyncio.Task[None]) -> None:
 async def _cancel(state: ServerState) -> None:
     state.hide_targets()
     await state.bus.broadcast(calibration_targets_event([]))
-    task = state.auto_task
-    if task is not None and not task.done():
-        task.cancel()  # the task hides the pattern and re-announces the status
+    for task in (state.auto_task, state.read_task):
+        if task is not None and not task.done():
+            task.cancel()  # each task cleans up what it showed on the board
 
 
 async def _calibrate_manually(message: ManualCalibration, client: Sender, state: ServerState) -> None:
@@ -107,9 +121,11 @@ async def _calibrate_manually(message: ManualCalibration, client: Sender, state:
             await state.refuse_calibration(str(error))
             return
 
+        statics = await asyncio.to_thread(_printed_markers_now, state)
         await state.adopt_calibration(
             Calibration.from_matrix(
                 matrix,
+                static_markers=statics,
                 method="manual",
                 camera_size=camera_size,
                 board_size=(board.width, board.height),
@@ -117,6 +133,12 @@ async def _calibrate_manually(message: ManualCalibration, client: Sender, state:
                 points=len(targets),
             )
         )
+
+
+def _printed_markers_now(state: ServerState) -> list[StaticMarker]:
+    """Where the printed markers are in the current camera frame (for drift checks)."""
+    frame = state.camera.latest() if state.camera is not None else None
+    return [] if frame is None else static_markers_in(detect_markers(frame.image, make_detector()))
 
 
 def _near_board(point: tuple[float, float], board_size: tuple[float, float]) -> bool:

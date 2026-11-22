@@ -88,6 +88,20 @@ class PatternShown:
     run: int | None = None
 
 
+@dataclass(frozen=True)
+class ReadBoard:
+    """Read the physical writing in `bbox` (board px), or on the whole board if None."""
+
+    bbox: tuple[float, float, float, float] | None = None
+
+
+@dataclass(frozen=True)
+class FlashShown:
+    """The board page shows the white area for read number `run`."""
+
+    run: int | None = None
+
+
 ClientMessage = (
     Hello
     | Ping
@@ -97,6 +111,8 @@ ClientMessage = (
     | MapPoint
     | CalibrateAuto
     | PatternShown
+    | ReadBoard
+    | FlashShown
 )
 
 
@@ -197,6 +213,23 @@ def _manual_calibration(body: dict[str, Any]) -> ManualCalibration:
     return ManualCalibration(camera_points, (int(width), int(height)))
 
 
+def _read_board(body: dict[str, Any]) -> ReadBoard:
+    raw = body.get("bbox")
+    if raw is None:
+        return ReadBoard()
+    if not isinstance(raw, list) or len(raw) != 4:
+        raise MessageError("'bbox' must be [x, y, width, height].")
+    wrapped = dict(zip("xywh", raw))
+    x = _number(wrapped, "x", -MAX_DISPLAY_SIDE, MAX_DISPLAY_SIDE)
+    y = _number(wrapped, "y", -MAX_DISPLAY_SIDE, MAX_DISPLAY_SIDE)
+    try:
+        w = _number(wrapped, "w", 1, MAX_DISPLAY_SIDE)
+        h = _number(wrapped, "h", 1, MAX_DISPLAY_SIDE)
+    except MessageError as error:
+        raise MessageError("'bbox' width and height must be positive.") from error
+    return ReadBoard((x, y, w, h))
+
+
 def parse_client_message(raw: str) -> ClientMessage:
     """Check a text message from the browser. Raises MessageError if it is not usable."""
     if len(raw) > MAX_MESSAGE_CHARS:
@@ -236,6 +269,13 @@ def parse_client_message(raw: str) -> ClientMessage:
         if run is not None and (isinstance(run, bool) or not isinstance(run, int)):
             raise MessageError("'run' must be a whole number.")
         return PatternShown(run)
+    if kind == "read_board":
+        return _read_board(body)
+    if kind == "flash_shown":
+        run = body.get("run")
+        if run is not None and (isinstance(run, bool) or not isinstance(run, int)):
+            raise MessageError("'run' must be a whole number.")
+        return FlashShown(run)
     if kind == "map_point":
         point = _pair(body.get("camera_point"), "camera_point", -MAX_DISPLAY_SIDE, MAX_DISPLAY_SIDE)
         return MapPoint(point)

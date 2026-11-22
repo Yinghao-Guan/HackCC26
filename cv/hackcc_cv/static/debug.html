@@ -40,6 +40,11 @@
     color: #1d4ed8; background: rgba(255,255,255,.85); border: 2px solid #1d4ed8; border-radius: 999px; padding: 2px 8px; }
   .tip { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #1d4ed8; }
   #ring { position: fixed; left: 50%; top: 24px; transform: translateX(-50%); display: none; }
+  /* Reading the board: plain white over the area, and outlines of found writing. */
+  #flash { position: fixed; background: #ffffff; display: none; z-index: 60; }
+  .found { position: absolute; border: 3px dashed #ea580c; border-radius: 6px; }
+  .found span { position: absolute; left: 0; top: -22px; font: 600 12px system-ui, sans-serif;
+    color: #ea580c; background: #fff; padding: 1px 6px; border-radius: 4px; }
   button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; cursor: pointer; }
 </style>
 </head>
@@ -49,11 +54,13 @@
 <div id="handLayer" aria-hidden="true"></div>
 <svg id="ring" width="72" height="72" viewBox="0 0 72 72" aria-label="Reset countdown"><circle cx="36" cy="36" r="30" fill="#fff" stroke="#e5e7eb" stroke-width="8"/><circle id="ringArc" cx="36" cy="36" r="30" fill="none" stroke="#2563eb" stroke-width="8" stroke-dasharray="188.5" stroke-dashoffset="188.5" transform="rotate(-90 36 36)"/></svg>
 <div id="pattern" aria-hidden="true"></div>
+<div id="flash" aria-hidden="true"></div>
 <div id="panel">
   <h1>CV bus debug: WebSocket <span id="url" class="muted"></span></h1>
   <div class="row"><span>Connection</span><span id="conn" class="bad">connecting…</span></div>
   <div class="row"><span>Camera</span><span id="cam" class="muted">?</span></div>
   <div class="row"><span>Calibration</span><span id="cal" class="muted">?</span></div>
+  <div class="row"><span>Camera moved?</span><span id="drift" class="muted">?</span></div>
   <div class="row"><span>Hand tracking</span><span id="trk" class="muted">?</span></div>
   <div class="row"><span>Tool (double tap)</span><span id="tool">none</span></div>
   <div class="row"><span>Board moved (fist)</span><span id="pan">0, 0</span></div>
@@ -141,6 +148,29 @@
       () => send({ type: "calibration_pattern_shown", run }))); });
   }
 
+  // Cover an area with plain white so the camera sees only what is physically there,
+  // then confirm (with the read number) once it is really on screen.
+  function showFlash(e, confirm) {
+    const el = $("flash");
+    if (!e.bbox) { el.style.display = "none"; return; }
+    const [x, y, w, h] = e.bbox;
+    Object.assign(el.style, { display: "block", left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px`, background: e.color === "black" ? "#000" : "#fff" });
+    if (confirm) requestAnimationFrame(() => requestAnimationFrame(() => send({ type: "flash_shown", run: e.run })));
+  }
+  function showFound(regions, layer) {
+    layer.querySelectorAll(".found").forEach((n) => n.remove());
+    for (const r of regions) {
+      const [x, y, w, h] = r.bbox;
+      const box = document.createElement("div");
+      box.className = "found";
+      Object.assign(box.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+      const label = document.createElement("span");
+      label.textContent = "writing";
+      box.append(label);
+      layer.append(box);
+    }
+  }
+
   function showProbe(e) {
     const el = document.createElement("div");
     el.className = "probe"; el.style.left = `${e.x}px`; el.style.top = `${e.y}px`;
@@ -188,7 +218,15 @@
       case "calibration_targets": showTargets(e.targets); break;
       case "calibration_probe": showProbe(e); break;
       case "calibration_pattern": showPattern(e.markers, true, e.run); break;
+      case "drift": {
+        const el = $("drift");
+        el.textContent = `${e.status}${e.seen ? ` (${e.seen} markers, ${e.shift_px} px)` : ""}`;
+        el.className = e.status === "steady" ? "ok" : e.status === "off" || e.status === "unknown" ? "muted" : "bad";
+        break;
+      }
       case "hands": showHands(e); return;
+      case "flash": showFlash(e, true); break;
+      case "content_regions": showFound(e.regions, $("overlay")); break;
       case "reset_progress": showRing(e.progress); return;
       case "gesture": case "pan": case "rotate": case "zoom":
         onGesture(e); if (e.type !== "gesture" && e.phase === "move") return; break;
@@ -220,6 +258,8 @@
     socket.onopen = () => { $("conn").textContent = "connected"; $("conn").className = "ok"; sendHello(); };
     socket.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (err) { log(`bad message: ${err}`); } };
     socket.onclose = () => {
+      // Nothing will tell us to remove these while disconnected, so remove them now.
+      $("flash").style.display = "none"; showPattern([], false);
       $("conn").textContent = "disconnected, retrying…"; $("conn").className = "bad";
       setTimeout(connect, 1000);
     };

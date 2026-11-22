@@ -105,6 +105,15 @@ def test_gesture_lab_page_is_served_and_joins_as_an_operator():
     assert 'role: "operator"' in response.text  # must not change the board size
 
 
+def test_printable_markers_page_has_the_eight_static_markers():
+    with make_client() as client:
+        response = client.get("/markers")
+    assert response.status_code == 200
+    assert response.text.count('<img src="data:image/png;base64,') == 8
+    for marker_id in range(40, 48):
+        assert f'alt="Marker {marker_id}"' in response.text
+
+
 def test_debug_page_is_served():
     with make_client() as client:
         response = client.get("/debug")

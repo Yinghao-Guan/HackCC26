@@ -4,9 +4,9 @@ The camera side of the projected whiteboard. One Python process owns the camera 
 publishes everything it sees as JSON events on a WebSocket that the web app listens to.
 See [`docs/02-technical-design.md`](../docs/02-technical-design.md) for the design.
 
-Status: **Phase 3**. Camera, event bus, fake finger, preview, debug page, manual and
-automatic (ArUco) calibration, hand tracking and the five agreed gestures work. Reading the
-board and drift detection come next.
+Status: **Phase 5** (all CV phases done). Camera, event bus, fake finger, preview, debug
+page, manual and automatic (ArUco) calibration, hand tracking, the five agreed gestures,
+reading physical writing, and noticing camera moves with automatic re-calibration work.
 
 ## Setup
 
@@ -35,6 +35,7 @@ Flags win over environment variables, which win over the defaults.
 | `--fake` | `CV_FAKE_POINTER=1` | off | Publish a fake finger drawing a figure eight |
 | `--no-camera` | `CV_CAMERA=0` | camera on | Run without opening a camera |
 | `--no-gestures` | `CV_GESTURES=0` | on | No hand tracking or gestures |
+| `--no-auto-recalibrate` | `CV_AUTO_RECALIBRATE=0` | on | Only warn when the camera moves |
 | `--port` | `CV_PORT` | `8765` | Server port (binds to 127.0.0.1) |
 | | `CV_ALLOWED_ORIGINS` | localhost:3000 and :8765 | Comma-separated web pages allowed to connect |
 | | `CV_DATA_DIR` | `cv/data` | Where calibrations are saved (git-ignored) |
@@ -49,6 +50,7 @@ Flags win over environment variables, which win over the defaults.
 | `/debug` | Test board page: connection, camera and calibration status, fake ink, targets |
 | `/calibrate` | Operator page for calibration (automatic and manual) |
 | `/gestures` | Gesture Lab: try the gestures and see what the hand tracker sees |
+| `/markers` | Printable markers (ids 40-47) to stick around the board |
 
 ## Automatic calibration (ArUco markers)
 
@@ -86,6 +88,59 @@ Do it after the projector, board and camera are fixed in place.
 The result is saved to `cv/data/calibration.json` (with a timestamped copy in
 `cv/data/history/`) and loaded again when the service starts. It is marked **stale** when
 the board page or camera image changes size: then calibrate again.
+
+## Noticing camera moves (automatic re-calibration)
+
+1. Open <http://127.0.0.1:8765/markers>, print at 100% scale, cut out 3 or 4 markers (keep
+   the white border) and stick them around the board, **outside the projected picture**,
+   on things that never move, where the camera can see them.
+2. Calibrate. The service remembers where those printed markers are.
+3. A few times a second it looks for them again. If most of them have moved (median shift
+   over 4 px, seen 3 checks in a row, so a hand passing by doesn't count), the calibration
+   turns **stale** with "The camera moved…". Once the camera has been still for a moment it
+   recalibrates by itself (the demo finale: nudge the phone, the board works again).
+4. If the camera is put back where it was, the old calibration is trusted again.
+
+With `--no-auto-recalibrate` it only marks the calibration stale. Without printed markers
+everything else works; camera moves just aren't noticed (`drift` status `off`).
+
+```json
+{ "type": "drift", "status": "moved", "shift_px": 13.9, "seen": 4, "message": "The camera moved; waiting for it to be still…" }
+```
+
+`drift.status`: `off` (no printed markers at calibration), `unknown` (fewer than 2 visible
+now), `steady`, `checking`, `moved`, `recalibrate`.
+
+## Reading the board (physical writing)
+
+Finds marker writing and printed sheets that are physically on the board, and gives the AI
+a straight-on picture of them. Needs a calibration (status `ok`).
+
+1. A page sends `read_board` (optionally with `bbox`, an area in board px).
+2. Board pages cover that area with plain white (hiding digital ink) and confirm with
+   `flash_shown`; the service waits a moment, takes the median of 5 frames, then removes the white.
+3. It straightens the area with the calibration, finds the writing (clearly darker than the
+   board around it; strokes close together become one region; specks are ignored), and sends
+   `content_regions` (where the writing is, so the UI keeps clear of it) and `content_capture`
+   (the straightened picture as a PNG data URL, for the AI to read).
+
+Try it on `/calibrate` → **Read the whole board**: it shows the picture with the writing
+outlined. The board page outlines the writing in orange too.
+
+```json
+{ "type": "read_board", "bbox": [0, 0, 700, 800] }
+{ "type": "flash", "run": 3, "color": "white", "bbox": [0, 0, 700, 800] }
+{ "type": "flash_shown", "run": 3 }
+{ "type": "flash", "run": null, "color": "white", "bbox": null }
+{ "type": "content_regions", "regions": [{ "id": "r1", "kind": "physical", "bbox": [146.2, 136.4, 428.9, 78.9] }] }
+{ "type": "content_capture", "image": "data:image/png;base64,...", "bbox": [0, 0, 700, 800], "regions": ["..."] }
+{ "type": "board_read", "status": "ok", "message": "Found 3 pieces of writing." }
+```
+
+`board_read.status` is `reading` (with the step), `ok` or `error` (with the reason, such as
+"Calibrate first"). Reading and calibrating take turns: both use the projector. Areas are
+cut to the board, and the white reaches 20 px past the area so calibration slack never
+pulls the board's frame into the picture. Board pages clear the white if they disconnect.
 
 ## Gestures (agreed with the team)
 

@@ -19,6 +19,15 @@
   /* ArUco calibration pattern: pure white page, crisp black-and-white markers. */
   #pattern { position: fixed; inset: 0; background: #ffffff; display: none; z-index: 50; }
   #pattern img { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  /* Reading the board: plain white over the area, and outlines of found writing. */
+  #flash { position: fixed; background: #ffffff; display: none; z-index: 60; }
+  .found { position: absolute; border: 3px dashed #ea580c; border-radius: 6px; }
+  .found span { position: absolute; left: 0; top: -22px; font: 600 12px system-ui, sans-serif;
+    color: #ea580c; background: #fff; padding: 1px 6px; border-radius: 4px; }
+  #readResult { position: relative; display: none; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  #readResult img { display: block; width: 100%; height: auto; }
+  #readBoxes { position: absolute; inset: 0; }
+  #readBoxes div { position: absolute; border: 2px dashed #ea580c; }
   button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;
     background: #f9fafb; color: var(--ink); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -50,11 +59,13 @@
 <body>
 <div id="board" aria-hidden="true"></div>
 <div id="pattern" aria-hidden="true"></div>
+<div id="flash" aria-hidden="true"></div>
 <main>
   <h1>Board calibration</h1>
   <p class="muted">Maps the camera image to the board page so a finger on the board lands in the right place.</p>
 
   <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting…</span></div>
+  <p class="muted" id="driftText">Camera-move check: waiting… (<a href="/markers" target="_blank">print the markers</a> and stick them around the board)</p>
 
   <div class="bar">
     <button id="auto" class="primary" type="button">Auto calibrate (markers)</button>
@@ -73,6 +84,12 @@
     <canvas id="marks"></canvas>
   </div>
   <p class="muted" id="camInfo">Camera: ?</p>
+
+  <h1 style="margin-top:24px">Read the board</h1>
+  <p class="muted">Shows white on the board for a moment and finds the physical writing (marker, printed sheets). Needs a calibration.</p>
+  <div class="bar"><button id="read" class="primary" type="button">Read the whole board</button></div>
+  <div id="readStatus" class="status"><span class="dot"></span><span id="readText">Not read yet.</span></div>
+  <div id="readResult"><img id="readImage" alt="What the camera read, straightened"><div id="readBoxes"></div></div>
 </main>
 <script>
 (() => {
@@ -143,6 +160,19 @@
     if (clicks.length === 4) send({ type: "calibrate_manual", camera_points: clicks, camera_size: [w, h] });
   });
 
+  // The straightened picture of the area that was read, with the writing outlined.
+  function showCapture(e) {
+    const [bx, by, bw, bh] = e.bbox;
+    $("readImage").src = e.image;
+    $("readResult").style.display = "block";
+    $("readBoxes").replaceChildren(...e.regions.map((r) => {
+      const [x, y, w, h] = r.bbox, box = document.createElement("div");
+      Object.assign(box.style, { left: `${(100 * (x - bx)) / bw}%`, top: `${(100 * (y - by)) / bh}%`,
+        width: `${(100 * w) / bw}%`, height: `${(100 * h) / bh}%` });
+      return box;
+    }));
+  }
+  $("read").onclick = () => send({ type: "read_board" });
   $("auto").onclick = () => { clicks = []; $("check").checked = false; drawMarks(); send({ type: "calibrate_auto" }); };
   $("start").onclick = () => { clicks = []; $("check").checked = false; drawMarks(); send({ type: "calibrate_manual_start" }); };
   $("cancel").onclick = () => { clicks = []; drawMarks(); send({ type: "calibrate_cancel" }); };
@@ -180,6 +210,29 @@
       () => send({ type: "calibration_pattern_shown", run }))); });
   }
 
+  // Cover an area with plain white so the camera sees only what is physically there,
+  // then confirm (with the read number) once it is really on screen.
+  function showFlash(e, confirm) {
+    const el = $("flash");
+    if (!e.bbox) { el.style.display = "none"; return; }
+    const [x, y, w, h] = e.bbox;
+    Object.assign(el.style, { display: "block", left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px`, background: e.color === "black" ? "#000" : "#fff" });
+    if (confirm) requestAnimationFrame(() => requestAnimationFrame(() => send({ type: "flash_shown", run: e.run })));
+  }
+  function showFound(regions, layer) {
+    layer.querySelectorAll(".found").forEach((n) => n.remove());
+    for (const r of regions) {
+      const [x, y, w, h] = r.bbox;
+      const box = document.createElement("div");
+      box.className = "found";
+      Object.assign(box.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+      const label = document.createElement("span");
+      label.textContent = "writing";
+      box.append(label);
+      layer.append(box);
+    }
+  }
+
   function showProbe(e) {
     const el = document.createElement("div");
     el.className = "probe"; el.style.left = `${e.x}px`; el.style.top = `${e.y}px`;
@@ -207,6 +260,14 @@
         showTargets(e.targets);
         break;
       case "calibration_probe": showProbe(e); break;
+      case "flash": showFlash($("isBoard").checked ? e : { bbox: null }, $("isBoard").checked); break;
+      case "content_regions": if ($("isBoard").checked) showFound(e.regions, $("board")); break;
+      case "board_read":
+        $("readStatus").className = `status ${e.status === "ok" ? "ok" : e.status === "error" ? "error" : "stale"}`;
+        $("readText").textContent = e.message || e.status;
+        break;
+      case "content_capture": showCapture(e); break;
+      case "drift": $("driftText").firstChild.textContent = `Camera-move check: ${e.message} `; break;
       // Only draw (and confirm) the pattern when this screen is the projector.
       case "calibration_pattern": showPattern($("isBoard").checked ? e.markers : [], true, e.run); break;
       case "camera":
@@ -223,6 +284,8 @@
     socket.onopen = sendHello;
     socket.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (err) { console.error(err); } };
     socket.onclose = () => {
+      // Nothing will tell us to remove these while disconnected, so remove them now.
+      $("flash").style.display = "none"; showPattern([], false);
       $("status").className = "status error";
       $("statusText").textContent = "Disconnected from the CV service. Retrying…";
       setTimeout(connect, 1000);

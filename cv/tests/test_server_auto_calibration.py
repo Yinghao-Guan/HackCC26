@@ -14,7 +14,13 @@ from hackcc_cv.config import Config
 from hackcc_cv.events import Display
 from hackcc_cv.markers import grid_layout
 from hackcc_cv.server import create_app
-from tests.synthetic import BOARD_SIZE, camera_frame
+from tests.synthetic import (
+    BOARD_SIZE,
+    STATIC_SIZE,
+    STATIC_SPOTS,
+    add_static_markers,
+    camera_frame,
+)
 
 WS_URL = "ws://127.0.0.1:8765/ws"
 
@@ -100,6 +106,20 @@ def test_auto_calibration_shows_the_pattern_finds_it_and_saves(tmp_path):
 
     saved = load_calibration(tmp_path)
     assert saved is not None and saved.method == "aruco"
+
+
+def test_auto_calibration_remembers_where_the_printed_markers_are(tmp_path):
+    layout = grid_layout(Display(*BOARD_SIZE, 1))
+    frame = add_static_markers(camera_frame(layout))
+    with make_client(tmp_path, frame) as client, board_page(client) as ws:
+        ws.send_json({"type": "calibrate_auto"})
+        pattern = next_of(ws, "calibration_pattern")
+        ws.send_json({"type": "calibration_pattern_shown", "run": pattern["run"]})
+        assert final_status(ws)["status"] == "ok"
+    saved = load_calibration(tmp_path)
+    assert [m.id for m in saved.static()] == [40, 41, 42, 43]
+    first = saved.static()[0]
+    assert abs(first.x - (STATIC_SPOTS[40][0] + STATIC_SIZE / 2)) < 2
 
 
 def test_without_a_camera_auto_calibration_explains_why(tmp_path):
