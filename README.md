@@ -30,7 +30,6 @@ The whole screen is the board, with one **+** button in the bottom-right corner 
 - **Eraser**: a double tap in the air (thumb and index finger) switches to an eraser that removes whole strokes, and back. While it is on, **Eraser on · tap for pen** shows at the top right; tap it to go back to the pen.
 - **Moving around**: the board is endless. Scroll with the mouse wheel or trackpad, drag with the middle mouse button, or make a fist in front of the camera and move it. Both hands held open for 2 seconds put the view back to the start.
 - **Undo**: Ctrl/Cmd+Z, or say "undo that".
-- **Keys**, for someone at the laptop when a tap on the projected board misses: **S** Solve, **G** Graph, **C** Check, **V** Speak (again to stop), **E** pen or eraser, **R** reset the view, **?** shows the list.
 
 The AI actions read only what is on screen.
 
