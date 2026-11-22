@@ -4,9 +4,9 @@ The camera side of the projected whiteboard. One Python process owns the camera 
 publishes everything it sees as JSON events on a WebSocket that the web app listens to.
 See [`docs/02-technical-design.md`](../docs/02-technical-design.md) for the design.
 
-Status: **Phase 1**. Camera, event bus, fake finger, preview, debug page and the manual
-four-corner calibration work. ArUco auto-calibration, hand tracking, gestures, reading the
-board and drift detection come next.
+Status: **Phase 2**. Camera, event bus, fake finger, preview, debug page, the manual
+four-corner calibration and the automatic ArUco calibration work. Hand tracking, gestures,
+reading the board and drift detection come next.
 
 ## Setup
 
@@ -48,7 +48,26 @@ Flags win over environment variables, which win over the defaults.
 | `/debug` | Test board page: connection, camera and calibration status, fake ink, targets |
 | `/calibrate` | Operator page for the manual four-corner calibration |
 
+## Automatic calibration (ArUco markers)
+
+The quickest way, and the one to use for the demo. Set up the projector, board and camera
+first and keep them still.
+
+1. Open the board page fullscreen on the projector (for now `/debug`), in front: browsers
+   don't draw hidden tabs, and the service waits for the board page to confirm.
+2. Open <http://127.0.0.1:8765/calibrate> and press **Auto calibrate**.
+3. The board turns white with 12 markers (4 x 3) for a few seconds. The service grabs 15
+   frames, takes the median of every corner, fits the mapping (ignoring stray corners),
+   and checks it: at least 4 markers, spread across the board, average error under 3 px.
+   It tries 3 times, then saves the result or says exactly what went wrong.
+4. Check it with **Check mode**, as below.
+
+If it fails: make sure the camera sees the whole board, the room is not too bright, the
+projector's keystone correction is off, and nothing covers the board.
+
 ## Manual calibration (four corners)
+
+The fallback when the markers can't be found (for example a very dim projector).
 
 Maps camera pixels to board pixels so a finger on the board lands in the right place.
 Do it after the projector, board and camera are fixed in place.
@@ -95,6 +114,8 @@ Browser to server:
 { "type": "calibrate_manual", "camera_points": [[300,120],[1100,180],[1040,640],[260,600]], "camera_size": [1280,720] }
 { "type": "calibrate_cancel" }
 { "type": "map_point", "camera_point": [640, 360] }
+{ "type": "calibrate_auto" }
+{ "type": "calibration_pattern_shown", "run": 1 }
 ```
 
 `role` is `board` (the page on the projector; it sets the board size) or `operator`
@@ -112,12 +133,21 @@ Server to browser:
   "camera_size": [1280, 720], "board_size": [1707, 1067], "created_at": 1767000000.0 }
 { "type": "calibration_targets", "targets": [{ "id": 1, "x": 170.7, "y": 106.7 }] }
 { "type": "calibration_probe", "x": 812.4, "y": 440.1, "camera_x": 640, "camera_y": 360 }
+{ "type": "calibration_pattern", "run": 1, "markers": [{ "id": 0, "x": 51.2, "y": 64.8, "size": 152.1, "png": "data:image/png;base64,..." }] }
 ```
 
-`calibration.status` is `none`, `ok`, `stale` (board or camera size changed) or `error`
-(the last attempt failed; `message` says why). A board page should draw
+`calibration.status` is `none`, `ok`, `stale` (board or camera size changed), `calibrating`
+(an automatic calibration is running; `message` says which step) or `error` (the last
+attempt failed; `message` says why). A board page should draw
 `calibration_targets` as numbered crosses (an empty list hides them) and briefly draw a
 cross at each `calibration_probe`.
+
+On `calibration_pattern`, a board page covers itself in pure white and draws each marker
+PNG at `x`, `y` with width and height `size` (CSS px, `image-rendering: pixelated`), then
+sends `calibration_pattern_shown` with the same `run` number once every image has loaded and
+been painted (a reply for an older `run` is ignored). An empty list
+removes the white layer. Marker ids 0-11 are the projected grid; 40-47 are kept for printed
+markers around the board.
 
 `camera.status` is `ok`, `error` (with a message), `off` or `starting`. The page should
 say so when it is not `ok`, rather than silently doing nothing.
