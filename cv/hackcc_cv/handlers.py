@@ -7,25 +7,16 @@ import logging
 import math
 from typing import Any, Protocol
 
-from .bus import Bus
-from .calibration import (
-    Calibration,
-    CalibrationStore,
-    calibration_status_event,
-    manual_targets,
-    save_calibration,
-    stale_reason,
-)
-from .camera import Camera
-from .config import Config
+from .auto_calibration import run_auto_calibration
+from .calibration import Calibration, manual_targets
 from .events import (
-    DEFAULT_DISPLAY,
+    CalibrateAuto,
     CancelCalibration,
     ClientMessage,
-    Display,
     Hello,
     ManualCalibration,
     MapPoint,
+    PatternShown,
     Ping,
     StartManualCalibration,
     calibration_probe_event,
@@ -41,75 +32,16 @@ from .homography import (
     reprojection_error,
     validate_quad,
 )
+from .state import ServerState
 
 log = logging.getLogger(__name__)
+
+PROBE_MARGIN = 1.0  # a check cross may land up to one board size beyond each edge
+BUSY = "A calibration is already running. Wait for it, or press Cancel."
 
 
 class Sender(Protocol):
     async def send_json(self, data: Any) -> None: ...
-
-
-class ServerState:
-    """What the server remembers between messages.
-
-    `display` is the board page's size, set by the page that says hello as "board".
-    Keep only one board page open at a time.
-    """
-
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self.bus = Bus()
-        self.display: Display = DEFAULT_DISPLAY
-        self.camera: Camera | None = None
-        self.calibration = CalibrationStore()
-        self.calibration_problem = ""  # set when the saved calibration could not be loaded
-        self.save_problem = ""  # set when the calibration in use could not be saved
-        # The targets on show, and the board size they were placed for.
-        self.targets: list[tuple[float, float]] | None = None
-        self.targets_display: Display | None = None
-        self.calibration_lock = asyncio.Lock()  # one calibration at a time
-        self.last_calibration_key: tuple[str, str] | None = None
-        self.shutting_down = False
-
-    def camera_size(self) -> tuple[int, int] | None:
-        if self.camera is None:
-            return None
-        status = self.camera.status()
-        if status["status"] != "ok" or not status["width"]:
-            return None
-        return int(status["width"]), int(status["height"])
-
-    def calibration_event(self) -> dict[str, Any]:
-        current = self.calibration.current()
-        if current is None:
-            if self.calibration_problem:
-                return calibration_status_event("error", message=self.calibration_problem)
-            return calibration_status_event("none", message="Not calibrated yet.")
-        reason = stale_reason(current, self.display, self.camera_size())
-        if reason is not None:
-            return calibration_status_event("stale", current, reason)
-        if self.save_problem:
-            return calibration_status_event("ok", current, self.save_problem)
-        return calibration_status_event("ok", current)
-
-    def remember_announced(self, event: dict[str, Any]) -> None:
-        self.last_calibration_key = (event["status"], event["message"])
-
-    async def announce_calibration(self, *, force: bool = False) -> None:
-        """Broadcast the calibration status if it changed (or always, with force)."""
-        event = self.calibration_event()
-        if force or (event["status"], event["message"]) != self.last_calibration_key:
-            self.remember_announced(event)
-            await self.bus.broadcast(event)
-
-    def show_targets(self) -> list[tuple[float, float]]:
-        self.targets = manual_targets(self.display)
-        self.targets_display = self.display
-        return self.targets
-
-    def hide_targets(self) -> None:
-        self.targets = None
-        self.targets_display = None
 
 
 async def handle_message(message: ClientMessage, client: Sender, state: ServerState) -> None:
@@ -123,64 +55,68 @@ async def handle_message(message: ClientMessage, client: Sender, state: ServerSt
     elif isinstance(message, StartManualCalibration):
         await state.bus.broadcast(calibration_targets_event(state.show_targets()))
     elif isinstance(message, CancelCalibration):
-        state.hide_targets()
-        await state.bus.broadcast(calibration_targets_event([]))
+        await _cancel(state)
     elif isinstance(message, ManualCalibration):
-        async with state.calibration_lock:
-            await _calibrate_manually(message, state)
+        await _calibrate_manually(message, client, state)
+    elif isinstance(message, CalibrateAuto):
+        if state.calibration_running():
+            await client.send_json(error_event(BUSY))
+            return
+        state.auto_task = asyncio.create_task(run_auto_calibration(state))
+        state.auto_task.add_done_callback(_report_crash)
+    elif isinstance(message, PatternShown):
+        # Only a reply to the pattern on show now counts, not one from an earlier try.
+        if message.run == state.pattern_run:
+            state.pattern_shown.set()
     elif isinstance(message, MapPoint):
         await _map_point(message, client, state)
 
 
-async def _refuse_calibration(state: ServerState, reason: str) -> None:
-    event = calibration_status_event("error", state.calibration.current(), reason)
-    state.remember_announced(event)
-    await state.bus.broadcast(event)
+def _report_crash(task: asyncio.Task[None]) -> None:
+    """Background tasks fail silently unless someone looks; log the reason."""
+    if not task.cancelled() and task.exception() is not None:
+        log.error("Automatic calibration crashed", exc_info=task.exception())
 
 
-async def _calibrate_manually(message: ManualCalibration, state: ServerState) -> None:
-    camera_size = state.camera_size() or message.camera_size
-    # The board size the targets were drawn for; without a start, the current board.
-    board = state.targets_display or state.display
-    if board != state.display:
-        await _refuse_calibration(
-            state, "The board page changed size during calibration. Press Show targets again."
-        )
-        return
-    targets = state.targets or manual_targets(board)
-    try:
-        validate_quad(message.camera_points, camera_size)
-        matrix = homography_from_points(message.camera_points, targets)
-    except HomographyError as error:
-        await _refuse_calibration(state, str(error))
-        return
-
-    calibration = Calibration.from_matrix(
-        matrix,
-        method="manual",
-        camera_size=camera_size,
-        board_size=(board.width, board.height),
-        reprojection_error_px=reprojection_error(matrix, message.camera_points, targets),
-        points=len(targets),
-    )
-    try:
-        path = await asyncio.to_thread(save_calibration, calibration, state.config.data_dir)
-        log.info("Saved manual calibration to %s", path)
-        state.save_problem = ""
-    except OSError as error:
-        log.error("Could not save the calibration: %s", error)
-        state.save_problem = (
-            f"Calibrated, but it could not be saved ({error}). "
-            "It will be lost when the service restarts."
-        )
-    state.calibration.set(calibration)
-    state.calibration_problem = ""
+async def _cancel(state: ServerState) -> None:
     state.hide_targets()
-    await state.announce_calibration(force=True)
     await state.bus.broadcast(calibration_targets_event([]))
+    task = state.auto_task
+    if task is not None and not task.done():
+        task.cancel()  # the task hides the pattern and re-announces the status
 
 
-PROBE_MARGIN = 1.0  # a check cross may land up to one board size beyond each edge
+async def _calibrate_manually(message: ManualCalibration, client: Sender, state: ServerState) -> None:
+    if state.calibration_running():
+        await client.send_json(error_event(BUSY))
+        return
+    async with state.calibration_lock:
+        camera_size = state.camera_size() or message.camera_size
+        # The board size the targets were drawn for; without a start, the current board.
+        board = state.targets_display or state.display
+        if board != state.display:
+            await state.refuse_calibration(
+                "The board page changed size during calibration. Press Show targets again."
+            )
+            return
+        targets = state.targets or manual_targets(board)
+        try:
+            validate_quad(message.camera_points, camera_size)
+            matrix = homography_from_points(message.camera_points, targets)
+        except HomographyError as error:
+            await state.refuse_calibration(str(error))
+            return
+
+        await state.adopt_calibration(
+            Calibration.from_matrix(
+                matrix,
+                method="manual",
+                camera_size=camera_size,
+                board_size=(board.width, board.height),
+                reprojection_error_px=reprojection_error(matrix, message.camera_points, targets),
+                points=len(targets),
+            )
+        )
 
 
 def _near_board(point: tuple[float, float], board_size: tuple[float, float]) -> bool:
