@@ -8,6 +8,7 @@ import sys
 import uvicorn
 
 from .config import ConfigError, load_config
+from .ports import port_in_use
 from .server import create_app
 
 log = logging.getLogger("hackcc_cv")
@@ -20,7 +21,15 @@ def main() -> int:  # pragma: no cover - starts a real server
     except ConfigError as error:
         log.error("%s", error)
         return 2
-    log.info("Debug page: http://%s:%d/debug", config.host, config.port)
+    if port_in_use(config.host, config.port):
+        log.error(
+            "Port %d is already in use. The CV service is probably already running in another "
+            "terminal: stop it there with Ctrl+C, or start this one with --port %d.",
+            config.port, config.port + 1,
+        )
+        return 2
+    log.info("Gesture Lab: http://%s:%d/gestures", config.host, config.port)
+    log.info("Debug page:  http://%s:%d/debug", config.host, config.port)
     # Don't wait forever for open preview streams when stopping with Ctrl+C.
     uvicorn.run(
         create_app(config),
