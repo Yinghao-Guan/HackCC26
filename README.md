@@ -22,41 +22,28 @@ npm run dev
 
 Then open [http://localhost:3000](http://localhost:3000).
 
-## Whiteboard tools
+## Whiteboard
 
-The board fills the whole screen. Two round buttons float on it: the **tool menu** (a pen icon, bottom right at first; see [Tool menu](#tool-menu-the-round-button) below) and the **AI menu** (sparkles, bottom middle; see [AI menu](#ai-menu-the-sparkle-button)).
+The board fills the whole screen. Its only control is the round **AI menu** button floating on it (sparkles, bottom middle at first; see [AI menu](#ai-menu-the-sparkle-button) below).
 
-- **Pen**: draw with the mouse (or a finger or stylus).
-- **Eraser**: *Pixel* rubs out part of a stroke; *Stroke* removes a whole stroke or text box with one touch.
-- **Text**: click the board and type. Enter adds a line; Esc or clicking away finishes. Click text to edit it. Typed text is part of the board, so it can be erased, undone, and read by the AI.
-- **Move**: drag the board to move around. The mouse wheel or trackpad scrolls it too, and so does dragging with the middle mouse button. The board is endless; **Reset view** goes back to the start. **Solve** reads only what is on screen.
-- **Undo**: in the tool menu, or Ctrl+Z (Cmd+Z on a Mac). **Clear** empties the board, and can be undone too.
+- **Draw** with the mouse (or a finger or stylus), using the default pen (black, 4 px).
+- **Move around**: the mouse wheel or trackpad scrolls the board, and so does dragging with the middle mouse button. The board is endless. **Solve** reads only what is on screen.
+- **Undo**: Ctrl+Z (Cmd+Z on a Mac), or say "undo that".
 
-### Tool menu (the round button)
-
-The round button floats on the board (bottom right at first), close to where you write. Tap it and eight buttons fan out around it: **Pen**, **Eraser**, **Text**, **Move**, **Undo**, **Board**, **Size** and **Color**. Tap a tool to use it and the menu closes.
-
-- **Size** opens a curved slider around the outside of the menu: drag along it (or tap anywhere on it) to set the size of the current pen, eraser or text, from smallest at the bottom to biggest at the top. The size shows in the middle as you drag.
-- **Color** opens an outer ring of five colors plus a rainbow swatch for any color. Picking a color switches to the pen (or keeps the text tool).
-- **Eraser**: tap once to pick it. Tap it again while it is picked to choose *Pixel* or *Stroke*.
-- **Undo** keeps the menu open, so you can tap it several times in a row.
-- **Board** opens **Clear** and **Reset view**.
-- Tap anywhere else on the board (or the × in the middle, or press Esc) to close the menu without drawing.
-- Drag the button to put it anywhere on the board. Near an edge, the open menu slides in just far enough to fit.
-- Keyboard: Enter opens it, the arrow keys move around a ring, Esc goes back. On the size slider the arrow keys change the size by 1 px, Page Up/Down by more, Home/End jump to the ends, and Enter closes the menu. The name of the button you point at shows in the middle.
-
-Each button is always in the same direction, so with use you can reach for it without looking (the idea behind marking menus, which work best with up to eight choices per ring). The menu follows the system's *reduce motion* setting. The code is in `src/components/whiteboard/RadialMenu.tsx`, with the geometry in `radialGeometry.ts`.
+> There is no tool menu. The eraser (*Pixel* and *Stroke*), typed text, colors, sizes, **Clear** and **Reset view** are still in the code (`DrawingCanvas.tsx`, `settings.ts` and the board reducer in `board.ts`), but nothing on screen switches to them.
 
 ### AI menu (the sparkle button)
 
-The second round button works the same way as the tool menu (tap to open, drag to move, the same animation and keyboard keys). Four buttons fan out around it: **Solve** at the top, **Graph** on the right, **Check** at the bottom and **Speak** on the left, each in its own color. Tap one and the menu closes while it works.
+Tap the button and four buttons fan out around it: **Solve** at the top, **Graph** on the right, **Check** at the bottom and **Speak** on the left, each in its own color. Tap one and the menu closes while it works.
 
 - While a request runs, a ring spins around the button in that action's color, and the other actions wait (only one request at a time).
 - While it is listening, the button turns red with a microphone; tap it to stop.
 - A small bubble beside the button says what is happening, what was heard, and any message (for example "Write a math problem on the board first."). Messages fade after a few seconds, or tap × to close them.
-- Only one of the two menus is open at a time: while one is open, a tap anywhere else (including on the other button) closes it first.
+- Tap anywhere else on the board (or the × in the middle, or press Esc) to close the menu without drawing.
+- Drag the button to put it anywhere on the board. Near an edge, the open menu slides in just far enough to fit.
+- Keyboard: Enter opens it, the arrow keys move around the ring, Esc closes it. The name of the button you point at shows in the middle.
 
-The code is in `src/components/whiteboard/AiMenu.tsx`. What both menus share (the motion, the round buttons, the disc, the draggable button) is in `radialKit.tsx`.
+Each button is always in the same direction, so with use you can reach for it without looking (the idea behind marking menus). The menu follows the system's *reduce motion* setting. The code is in `src/components/whiteboard/AiMenu.tsx`; its building blocks (the motion, the round buttons, the disc, the draggable button) are in `radialKit.tsx`, with the geometry in `radialGeometry.ts`.
 
 ## AI: Solve
 
@@ -64,7 +51,7 @@ Write a math problem on the board and tap **Solve** in the AI menu. The board's 
 
 ## AI: Graph
 
-Write an equation (or a few, like a system) and tap **Graph** in the AI menu. Claude reads them through `src/app/api/graph/` and says how to plot each one: a formula and a sensible window. The board then draws the curves itself, as a crisp SVG with axes and a color key, next to your writing. Explicit functions (`y = x^2 - 3x + 2`, lines, `sin`, `1/x`) and implicit ones (circles, hyperbolas) both work. If what is on screen is only **typed** equations (Text tool) that follow the usual forms, the graph is drawn right away on your machine: no AI call, no waiting (about 14 ms in testing), and it works offline. Handwriting, sentences, LaTeX and anything unclear still go to Claude (a few seconds). The formula evaluator is in `src/lib/expression.ts` and the drawing math is in `src/lib/plot.ts`; neither needs a library.
+Write an equation (or a few, like a system) and tap **Graph** in the AI menu. Claude reads them through `src/app/api/graph/` and says how to plot each one: a formula and a sensible window. The board then draws the curves itself, as a crisp SVG with axes and a color key, next to your writing. Explicit functions (`y = x^2 - 3x + 2`, lines, `sin`, `1/x`) and implicit ones (circles, hyperbolas) both work. If what is on screen is only **typed** equations (Text tool, which has no button at the moment) that follow the usual forms, the graph is drawn right away on your machine: no AI call, no waiting (about 14 ms in testing), and it works offline. Handwriting, sentences, LaTeX and anything unclear still go to Claude (a few seconds). The formula evaluator is in `src/lib/expression.ts` and the drawing math is in `src/lib/plot.ts`; neither needs a library.
 
 ### 3D graphs
 
@@ -110,7 +97,7 @@ src/app/api/solve/          Server route: reads the board image and solves it
 src/app/api/graph/          Server route: reads the board image and lists the curves or surfaces to graph
 src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
 src/app/api/ask/            Server route: answers a spoken question (with the board image, if there is writing)
-src/components/whiteboard/  Drawing canvas, stroke model, round tool and AI menus, voice input, answer, graph (2D and 3D) and check cards
+src/components/whiteboard/  Drawing canvas, stroke model, round AI menu, voice input, answer, graph (2D and 3D) and check cards
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```

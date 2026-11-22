@@ -28,9 +28,8 @@ import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
 import { MistakeMark } from "./MistakeMark";
-import { RadialMenu } from "./RadialMenu";
 import { ReplyCard } from "./ReplyCard";
-import { DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
+import { DEFAULT_SETTINGS, sizeOf } from "./settings";
 import type { Point, Stroke, StrokeDraft } from "./strokes";
 import { TEXT_LINE_HEIGHT } from "./text";
 import { TextEditor, type TextEdit } from "./TextEditor";
@@ -51,11 +50,13 @@ const VOICE_REPLIES: Record<VoiceCommand, string> = {
 const MAX_CHECK_LINES = 60;
 
 /**
- * The whole board: one full-screen drawing area, with two floating round menus on top: the tool
- * menu (pen, eraser, size, color, undo...) and the AI menu (solve, graph, check, speak).
+ * The whole board: one full-screen drawing area, with the floating round AI menu (solve, graph,
+ * check, speak) on top.
  */
 export function Whiteboard() {
-  const [settings, setSettings] = useState<WhiteboardSettings>(DEFAULT_SETTINGS);
+  // There is no tool menu, so the tool settings never change: you draw with the default pen.
+  // Undo is Ctrl/Cmd+Z, or saying "undo that".
+  const settings = DEFAULT_SETTINGS;
   const [board, dispatch] = useReducer(boardReducer, INITIAL_BOARD);
   const [ai, setAi] = useState<AiStatus>({ state: "idle" });
   const [voice, setVoice] = useState<VoiceStatus>({ state: "idle" });
@@ -73,11 +74,6 @@ export function Whiteboard() {
     setEdit(next);
   }, []);
 
-  const updateSettings = useCallback(
-    (patch: Partial<WhiteboardSettings>) =>
-      setSettings((prev) => ({ ...prev, ...patch })),
-    [],
-  );
   const addStroke = useCallback(
     (stroke: StrokeDraft) => dispatch({ type: "add", stroke }),
     [],
@@ -87,13 +83,11 @@ export function Whiteboard() {
     [],
   );
   const undo = useCallback(() => dispatch({ type: "undo" }), []);
-  const clear = useCallback(() => dispatch({ type: "clear" }), []);
 
   const pan = useCallback(
     (dx: number, dy: number) => setView((v) => ({ x: v.x + dx, y: v.y + dy })),
     [],
   );
-  const resetView = useCallback(() => setView(ORIGIN), []);
 
   /** Scroll with the mouse wheel or a trackpad. */
   const handleWheel = (e: WheelEvent<HTMLElement>) => {
@@ -493,19 +487,7 @@ export function Whiteboard() {
           })}
         </div>
 
-        {/* The floating round tool menu. It stays put on screen while the board scrolls. */}
-        <RadialMenu
-          settings={settings}
-          onSettingsChange={updateSettings}
-          canUndo={board.past.length > 0}
-          canClear={board.strokes.length > 0 || board.cards.length > 0}
-          canResetView={view.x !== 0 || view.y !== 0}
-          onUndo={undo}
-          onClear={clear}
-          onResetView={resetView}
-        />
-
-        {/* The floating round AI menu: solve, graph, check and speak. */}
+        {/* The floating round AI menu: solve, graph, check and speak. It stays put while the board scrolls. */}
         <AiMenu
           ai={ai}
           voice={listening ? { state: "listening", heard: hearing } : voice}

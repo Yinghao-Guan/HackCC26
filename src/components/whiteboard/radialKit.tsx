@@ -1,6 +1,6 @@
-// The pieces shared by the floating radial menus (the tool menu in RadialMenu.tsx and the AI
-// menu in AiMenu.tsx), so both look and move the same: the motion, the round buttons, the disc,
-// and a hub that can be dragged around the board and slides the open menu onto it.
+// Building blocks for a floating radial menu (used by the AI menu in AiMenu.tsx): the motion, the
+// round buttons, the disc, and a hub that can be dragged around the board and slides the open
+// menu onto it. Kept apart from the menu itself so another radial menu can reuse them.
 
 import {
   useEffect,
@@ -24,9 +24,9 @@ import type { Point } from "./strokes";
 
 // Motion. Opening overshoots a little, like a spring, and items follow each other around the
 // ring; closing is quicker and plain.
-export const SPRING = "cubic-bezier(0.34, 1.5, 0.64, 1)";
-export const EASE_IN = "cubic-bezier(0.4, 0, 1, 1)";
-export const GLIDE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
+const SPRING = "cubic-bezier(0.34, 1.5, 0.64, 1)";
+const EASE_IN = "cubic-bezier(0.4, 0, 1, 1)";
+const GLIDE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
 const STAGGER_OPEN_MS = 22;
 const STAGGER_CLOSE_MS = 12;
 
@@ -55,7 +55,7 @@ export function usePrefersReducedMotion(): boolean {
  * rotate → move out → rotate back so a transition between two of these swings the element along
  * a curve around the center instead of a straight line.
  */
-export function polarTransform(angle: number, radius: number, scale: number): string {
+function polarTransform(angle: number, radius: number, scale: number): string {
   return `translate(-50%, -50%) rotate(${angle}deg) translateX(${radius}px) rotate(${-angle}deg) scale(${scale})`;
 }
 
@@ -120,25 +120,6 @@ export function itemBase(shown: boolean): string {
   return `flex size-full flex-col items-center justify-center gap-0.5 rounded-full shadow-md transition-[scale,background-color,color,box-shadow] duration-150 hover:scale-110 active:scale-95 disabled:opacity-40 disabled:hover:scale-100 ${focusRing} ${
     shown ? "pointer-events-auto" : "pointer-events-none"
   }`;
-}
-
-/**
- * How a round menu button looks: "selected" is the current tool (filled), "open" is an item
- * whose outer ring is showing (pressed in), "chosen" is the current value on an outer ring
- * (outlined), "danger" is a destructive action.
- */
-export const ITEM_LOOKS = {
-  plain: "bg-white text-neutral-800 ring-1 ring-black/10 hover:bg-neutral-50",
-  selected: "bg-neutral-900 text-white ring-1 ring-neutral-900",
-  open: "bg-neutral-200 text-neutral-900 ring-1 ring-black/15",
-  chosen: "bg-white text-neutral-900 ring-[2.5px] ring-neutral-900",
-  danger: "bg-white text-red-600 ring-1 ring-red-200 hover:bg-red-50",
-} as const;
-
-export type ItemLook = keyof typeof ITEM_LOOKS;
-
-export function itemClass(shown: boolean, look: ItemLook): string {
-  return `${itemBase(shown)} ${ITEM_LOOKS[look]}`;
 }
 
 /** The hub's icons swap with a quarter turn. */
@@ -318,8 +299,8 @@ interface RadialFrameProps {
 }
 
 /**
- * The layer a floating menu lives in. While open it rises above the other menu, and a tap
- * anywhere else on the board just closes it (it doesn't draw).
+ * The layer a floating menu lives in. While open it rises above everything else on the board,
+ * and a tap anywhere else on the board just closes it (it doesn't draw).
  */
 export function RadialFrame({
   hub,

@@ -43,7 +43,7 @@ interface AiMenuProps {
 type AiItem = AiAction | "speak";
 type IconComponent = (props: { size?: number }) => ReactNode;
 
-// Fewer buttons than the tool menu, so they are a little bigger and closer in.
+// Four large buttons on one ring: big enough to hit with a finger on a projected board.
 const ITEM_SIZE = 56;
 const RING_RADIUS = 90;
 const DISC_RADIUS = RING_RADIUS + ITEM_SIZE / 2 + 10;
@@ -112,8 +112,8 @@ interface Bubble {
 }
 
 /**
- * The AI menu: a second floating round button, styled and moving like the tool menu. Tap it and
- * Solve, Graph, Check and Speak fan out around it. While a request runs, a ring spins around the
+ * The AI menu: a floating round button on the board. Tap it and Solve, Graph, Check and Speak fan
+ * out around it; drag it to move it anywhere. While a request runs, a ring spins around the
  * button in the action's color; while listening the button turns red and a tap on it stops. A
  * small bubble beside the button says what is happening, what was heard, and any message.
  */
@@ -143,8 +143,8 @@ export function AiMenu({ ai, voice, onSolve, onGraph, onCheck, onVoiceToggle }: 
     if (prevAi.state === "loading" && ai.state === "idle") setHiddenVoice(voice);
   }
 
-  // The hub starts at the bottom middle: away from the tool menu's (bottom right), and from the
-  // corner where Next.js shows its dev-mode badge (bottom left).
+  // The hub starts at the bottom middle, away from the corner where Next.js shows its dev-mode
+  // badge (bottom left).
   const hub = useFloatingHub({ initialPlace: { x: 0.5, y: 1 }, open, extent: EXTENT });
 
   useEffect(() => {
