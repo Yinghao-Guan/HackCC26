@@ -48,7 +48,7 @@ def fast_timings(monkeypatch):
 
 
 def make_client(tmp_path, image=None):
-    config = Config(camera_enabled=image is not None, warmup_seconds=0.0, data_dir=tmp_path)
+    config = Config(camera_enabled=image is not None, warmup_seconds=0.0, gestures=False, data_dir=tmp_path)
 
     def factory(cfg, on_status):
         return Camera(cfg, capture_factory=lambda i, b: ImageCapture(image), on_status=on_status)
