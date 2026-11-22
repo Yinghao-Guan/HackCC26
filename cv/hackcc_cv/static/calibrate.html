@@ -65,6 +65,7 @@
   <p class="muted">Maps the camera image to the board page so a finger on the board lands in the right place.</p>
 
   <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting…</span></div>
+  <p class="muted" id="driftText">Camera-move check: waiting… (<a href="/markers" target="_blank">print the markers</a> and stick them around the board)</p>
 
   <div class="bar">
     <button id="auto" class="primary" type="button">Auto calibrate (markers)</button>
@@ -266,6 +267,7 @@
         $("readText").textContent = e.message || e.status;
         break;
       case "content_capture": showCapture(e); break;
+      case "drift": $("driftText").firstChild.textContent = `Camera-move check: ${e.message} `; break;
       // Only draw (and confirm) the pattern when this screen is the projector.
       case "calibration_pattern": showPattern($("isBoard").checked ? e.markers : [], true, e.run); break;
       case "camera":
