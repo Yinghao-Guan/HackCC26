@@ -102,22 +102,31 @@ def _normalised(matrix: np.ndarray) -> np.ndarray:
     return matrix
 
 
-def homography_from_points(source: Points, target: Points, ransac_px: float = 3.0) -> np.ndarray:
-    """The 3x3 matrix mapping `source` points onto `target` points.
+def homography_with_inliers(
+    source: Points, target: Points, ransac_px: float = 3.0
+) -> tuple[np.ndarray, np.ndarray]:
+    """The 3x3 matrix mapping `source` onto `target`, and which pairs it agrees with.
 
-    Exactly 4 pairs give an exact fit; more pairs (ArUco corners) use RANSAC so a
-    few bad detections are ignored.
+    Exactly 4 pairs give an exact fit (all inliers); more pairs (ArUco corners) use
+    RANSAC, so pairs further than `ransac_px` (target units) from the fit are ignored.
     """
     src, dst = _as_points(source, "source"), _as_points(target, "target")
     if len(src) != len(dst) or len(src) < 4:
         raise HomographyError("Need at least 4 matching point pairs.")
     if len(src) == 4:
         matrix = cv2.getPerspectiveTransform(src.astype(np.float32), dst.astype(np.float32))
+        inliers = np.ones(4, dtype=bool)
     else:
-        matrix, _ = cv2.findHomography(src, dst, cv2.RANSAC, ransac_px)
-        if matrix is None:
+        matrix, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransac_px)
+        if matrix is None or mask is None:
             raise HomographyError("These points don't give a usable mapping.")
-    return _normalised(np.asarray(matrix, dtype=np.float64))
+        inliers = mask.ravel().astype(bool)
+    return _normalised(np.asarray(matrix, dtype=np.float64)), inliers
+
+
+def homography_from_points(source: Points, target: Points, ransac_px: float = 3.0) -> np.ndarray:
+    """The 3x3 matrix mapping `source` points onto `target` points."""
+    return homography_with_inliers(source, target, ransac_px)[0]
 
 
 def invert(matrix: np.ndarray) -> np.ndarray:
