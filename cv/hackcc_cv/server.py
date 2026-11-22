@@ -7,6 +7,7 @@ Routes:
   /debug        a test page that shows the bus and draws what a board page draws
   /calibrate    the operator page for calibration
   /gestures     Gesture Lab: try the hand gestures and see what the tracker sees
+  /markers      printable markers to stick around the board (notices camera moves)
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from . import __version__
 from .calibration import CalibrationError, load_calibration
 from .camera import Camera, CameraError, StatusListener
 from .config import Config
+from .drift_monitor import run_drift_monitor
 from .events import (
     MessageError,
     camera_status_event,
@@ -46,6 +48,7 @@ from .hands import HandTracker
 from .models import ensure_hand_model
 from .ports import quiet_connection_resets
 from .preview import annotate, encode_jpeg
+from .printable import printable_markers_page
 from .state import ServerState
 from .tracking import Tracker, TrackingLoop
 
@@ -139,6 +142,8 @@ def create_app(
             except CameraError as error:
                 # Keep serving: the UI shows the error and the fake pointer still works.
                 log.error("%s", error)
+            # Started even if the camera isn't ready yet: it may reopen later.
+            state.drift_task = asyncio.create_task(run_drift_monitor(state))
             if config.gestures and camera.status()["status"] == "ok":
                 state.tracking = TrackingLoop(
                     camera, tracker_factory, bus.publish_threadsafe, state.calibration.current
@@ -153,7 +158,7 @@ def create_app(
             yield
         finally:
             state.shutting_down = True
-            for task in (fake_task, state.auto_task, state.read_task):
+            for task in (fake_task, state.drift_task, state.auto_task, state.read_task):
                 if task is not None and not task.done():
                     task.cancel()
                     with contextlib.suppress(asyncio.CancelledError):
@@ -197,6 +202,10 @@ def create_app(
     @app.get("/debug", response_class=HTMLResponse)
     async def debug_page() -> str:
         return (STATIC / "debug.html").read_text(encoding="utf-8")
+
+    @app.get("/markers", response_class=HTMLResponse)
+    async def markers_page() -> str:
+        return printable_markers_page()
 
     @app.get("/gestures", response_class=HTMLResponse)
     async def gestures_page() -> str:
