@@ -135,3 +135,16 @@ yarn-error.log*
 
 # Vercel
 .vercel
+
+# ---------------------------------------------------------------------------
+# Python (cv/ service)
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+# Downloaded model files and per-machine calibration results
+cv/models/*.task
+cv/data/

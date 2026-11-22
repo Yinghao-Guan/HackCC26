@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CV Bus Debug</title>
+<style>
+  /* Light on purpose: a dark page hides the finger's shadow on the board. */
+  :root { --ink: #171717; --muted: #6b7280; --line: #e5e7eb; --ok: #16a34a; --bad: #dc2626; --pen: #2563eb; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #ffffff; color: var(--ink);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  #board { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  #panel { position: fixed; top: 12px; left: 12px; width: min(380px, calc(100vw - 24px));
+    background: rgba(255,255,255,.94); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  h1 { font-size: 15px; margin: 0 0 8px; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+  .muted { color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  #log { margin: 8px 0 0; max-height: 140px; overflow: auto; font: 12px/1.35 ui-monospace, Consolas, monospace;
+    white-space: pre-wrap; border-top: 1px solid var(--line); padding-top: 6px; }
+  #preview { display: none; width: 100%; margin-top: 8px; border-radius: 6px; border: 1px solid var(--line); }
+  /* Calibration targets and check crosses, in board pixels (CSS px of this page). */
+  #overlay { position: fixed; inset: 0; pointer-events: none; }
+  .target { position: absolute; width: 0; height: 0; }
+  .target::before, .target::after { content: ""; position: absolute; background: #000; }
+  .target::before { left: -40px; top: -2px; width: 80px; height: 4px; }
+  .target::after { left: -2px; top: -40px; width: 4px; height: 80px; }
+  .target span { position: absolute; left: 14px; top: 10px; font: 700 28px/1 system-ui, sans-serif; }
+  .probe { position: absolute; width: 0; height: 0; }
+  .probe::before, .probe::after { content: ""; position: absolute; background: var(--bad); }
+  .probe::before { left: -18px; top: -1.5px; width: 36px; height: 3px; }
+  .probe::after { left: -1.5px; top: -18px; width: 3px; height: 36px; }
+  /* ArUco calibration pattern: pure white page, crisp black-and-white markers. */
+  #pattern { position: fixed; inset: 0; background: #ffffff; display: none; z-index: 50; }
+  #pattern img { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  /* Hands and gestures */
+  #handLayer { position: fixed; inset: 0; pointer-events: none; }
+  .hand { position: absolute; transform: translate(-50%, -50%); font: 600 12px system-ui, sans-serif;
+    color: #1d4ed8; background: rgba(255,255,255,.85); border: 2px solid #1d4ed8; border-radius: 999px; padding: 2px 8px; }
+  .tip { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #1d4ed8; }
+  #ring { position: fixed; left: 50%; top: 24px; transform: translateX(-50%); display: none; }
+  button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; cursor: pointer; }
+</style>
+</head>
+<body>
+<canvas id="board" aria-label="Pointer events drawn as ink"></canvas>
+<div id="overlay" aria-hidden="true"></div>
+<div id="handLayer" aria-hidden="true"></div>
+<svg id="ring" width="72" height="72" viewBox="0 0 72 72" aria-label="Reset countdown"><circle cx="36" cy="36" r="30" fill="#fff" stroke="#e5e7eb" stroke-width="8"/><circle id="ringArc" cx="36" cy="36" r="30" fill="none" stroke="#2563eb" stroke-width="8" stroke-dasharray="188.5" stroke-dashoffset="188.5" transform="rotate(-90 36 36)"/></svg>
+<div id="pattern" aria-hidden="true"></div>
+<div id="panel">
+  <h1>CV bus debug: WebSocket <span id="url" class="muted"></span></h1>
+  <div class="row"><span>Connection</span><span id="conn" class="bad">connecting…</span></div>
+  <div class="row"><span>Camera</span><span id="cam" class="muted">?</span></div>
+  <div class="row"><span>Calibration</span><span id="cal" class="muted">?</span></div>
+  <div class="row"><span>Hand tracking</span><span id="trk" class="muted">?</span></div>
+  <div class="row"><span>Tool (double tap)</span><span id="tool">none</span></div>
+  <div class="row"><span>Board moved (fist)</span><span id="pan">0, 0</span></div>
+  <div class="row"><span>Zoom (two pinches)</span><span id="zoom">1.00×</span></div>
+  <div class="row"><span>3D turn (pinch hold)</span><span id="rot">0, 0</span></div>
+  <div class="row"><span>Last gesture</span><span id="last" class="muted">none</span></div>
+  <div class="row"><span>Display sent</span><span id="disp" class="muted">?</span></div>
+  <div class="row"><span>Pointer</span><span id="ptr" class="muted">none yet</span></div>
+  <div class="row"><span>Round trip</span><span id="rtt" class="muted">?</span></div>
+  <div class="row"><button id="toggle" type="button">Show camera</button><a href="/calibrate" target="_blank">Calibrate…</a><a href="/gestures" target="_blank">Gesture Lab…</a><button id="clear" type="button">Clear ink</button></div>
+  <img id="preview" alt="Live camera preview">
+  <div id="log"></div>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const canvas = $("board"), ctx = canvas.getContext("2d");
+  const url = `ws://${location.host}/ws`;
+  $("url").textContent = url;
+  let socket = null, lastPoint = null, pingSentAt = 0;
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    sendHello();
+  }
+
+  function log(text) {
+    const line = document.createElement("div");
+    line.textContent = `${new Date().toLocaleTimeString()} ${text}`;
+    $("log").prepend(line);
+    while ($("log").childElementCount > 60) $("log").lastChild.remove();
+  }
+
+  function send(message) {
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  }
+
+  function sendHello() {
+    const hello = { type: "hello", width: innerWidth, height: innerHeight, dpr: window.devicePixelRatio || 1 };
+    send(hello);
+    $("disp").textContent = `${hello.width}×${hello.height} @${hello.dpr}`;
+  }
+
+  function drawPointer(e) {
+    $("ptr").textContent = `${e.x.toFixed(0)}, ${e.y.toFixed(0)} ${e.touching ? "touching" : "hovering"}`;
+    if (e.touching && lastPoint) {
+      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--pen");
+      ctx.lineWidth = 4; ctx.lineCap = "round";
+      ctx.beginPath(); ctx.moveTo(lastPoint.x, lastPoint.y); ctx.lineTo(e.x, e.y); ctx.stroke();
+    }
+    lastPoint = e.touching ? { x: e.x, y: e.y } : null;
+  }
+
+  function showTargets(targets) {
+    $("overlay").querySelectorAll(".target").forEach((el) => el.remove());
+    for (const t of targets) {
+      const el = document.createElement("div");
+      el.className = "target"; el.style.left = `${t.x}px`; el.style.top = `${t.y}px`;
+      el.innerHTML = `<span>${t.id}</span>`;
+      $("overlay").appendChild(el);
+    }
+    // Hide the panel while targets show, so it never covers one.
+    $("panel").style.visibility = targets.length ? "hidden" : "visible";
+  }
+
+  // Draw the ArUco grid the server sent, then tell it the pattern is really on screen.
+  function showPattern(markers, confirm, run) {
+    const layer = $("pattern");
+    layer.replaceChildren();
+    if (!markers.length) { layer.style.display = "none"; return; }
+    const loads = markers.map((m) => new Promise((resolve) => {
+      const img = new Image();
+      img.alt = ""; img.onload = () => resolve(true); img.onerror = () => resolve(false);
+      img.src = m.png;
+      Object.assign(img.style, { left: `${m.x}px`, top: `${m.y}px`, width: `${m.size}px`, height: `${m.size}px` });
+      layer.appendChild(img);
+    }));
+    layer.style.display = "block";
+    if (!confirm) return;
+    // Confirm only when every marker really loaded, echoing the run number.
+    Promise.all(loads).then((ok) => { if (ok.every(Boolean)) requestAnimationFrame(() => requestAnimationFrame(
+      () => send({ type: "calibration_pattern_shown", run }))); });
+  }
+
+  function showProbe(e) {
+    const el = document.createElement("div");
+    el.className = "probe"; el.style.left = `${e.x}px`; el.style.top = `${e.y}px`;
+    $("overlay").appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  // What the web app would do with each gesture (a demo of the agreed rules).
+  const view = { tool: "none", panX: 0, panY: 0, zoom: 1, zoomBase: 1, rotX: 0, rotY: 0 };
+  function showView() {
+    $("tool").textContent = view.tool;
+    $("pan").textContent = `${view.panX.toFixed(0)}, ${view.panY.toFixed(0)}`;
+    $("zoom").textContent = `${view.zoom.toFixed(2)}×`;
+    $("rot").textContent = `${view.rotX.toFixed(0)}, ${view.rotY.toFixed(0)}`;
+  }
+  function onGesture(e) {
+    $("last").textContent = `${e.type === "gesture" ? e.name : e.type + " " + e.phase} (${new Date().toLocaleTimeString()})`;
+    if (e.type === "gesture" && e.name === "double_tap") view.tool = view.tool === "eraser" ? "pen" : "eraser";
+    if (e.type === "gesture" && e.name === "reset") Object.assign(view, { panX: 0, panY: 0, zoom: 1, zoomBase: 1, rotX: 0, rotY: 0 });
+    if (e.type === "pan" && e.phase === "move") { view.panX += e.dx; view.panY += e.dy; }
+    if (e.type === "rotate" && e.phase === "move") { view.rotX += e.dx; view.rotY += e.dy; }
+    if (e.type === "zoom") { if (e.phase === "start") view.zoomBase = view.zoom; view.zoom = view.zoomBase * e.scale; }
+    showView();
+  }
+  function showHands(e) {
+    const layer = $("handLayer");
+    layer.replaceChildren();
+    for (const h of e.hands) {
+      const label = document.createElement("div");
+      label.className = "hand"; label.textContent = `${h.hand}: ${h.pose}`;
+      label.style.left = `${h.palm[0]}px`; label.style.top = `${h.palm[1]}px`;
+      const tip = document.createElement("div");
+      tip.className = "tip"; tip.style.left = `${h.index_tip[0]}px`; tip.style.top = `${h.index_tip[1]}px`;
+      layer.append(label, tip);
+    }
+  }
+  function showRing(progress) {
+    $("ring").style.display = progress > 0 && progress < 1 ? "block" : "none";
+    $("ringArc").setAttribute("stroke-dashoffset", String(188.5 * (1 - progress)));
+  }
+
+  function onEvent(e) {
+    switch (e.type) {
+      case "pointer": drawPointer(e); return;
+      case "calibration_targets": showTargets(e.targets); break;
+      case "calibration_probe": showProbe(e); break;
+      case "calibration_pattern": showPattern(e.markers, true, e.run); break;
+      case "hands": showHands(e); return;
+      case "reset_progress": showRing(e.progress); return;
+      case "gesture": case "pan": case "rotate": case "zoom":
+        onGesture(e); if (e.type !== "gesture" && e.phase === "move") return; break;
+      case "tracking": {
+        const el = $("trk");
+        el.textContent = e.status === "ok" ? "ok" : `${e.status}: ${e.message}`;
+        el.className = e.status === "ok" ? "ok" : "bad";
+        break;
+      }
+      case "calibration": {
+        const el = $("cal");
+        el.textContent = e.status === "ok" ? `ok (${e.method}, ${e.reproj_error_px} px)` : `${e.status}: ${e.message}`;
+        el.className = e.status === "ok" ? "ok" : "bad";
+        break;
+      }
+      case "camera": {
+        const el = $("cam");
+        el.textContent = e.status === "ok" ? `ok ${e.width}×${e.height} ${e.fps ?? ""}fps` : `${e.status}: ${e.message}`;
+        el.className = e.status === "ok" ? "ok" : "bad";
+        break;
+      }
+      case "pong": $("rtt").textContent = `${(performance.now() - pingSentAt).toFixed(1)} ms`; return;
+    }
+    log(JSON.stringify(e));
+  }
+
+  function connect() {
+    socket = new WebSocket(url);
+    socket.onopen = () => { $("conn").textContent = "connected"; $("conn").className = "ok"; sendHello(); };
+    socket.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (err) { log(`bad message: ${err}`); } };
+    socket.onclose = () => {
+      $("conn").textContent = "disconnected, retrying…"; $("conn").className = "bad";
+      setTimeout(connect, 1000);
+    };
+  }
+
+  setInterval(() => { pingSentAt = performance.now(); send({ type: "ping" }); }, 2000);
+  $("clear").onclick = () => ctx.clearRect(0, 0, canvas.width, canvas.height);
+  $("toggle").onclick = () => {
+    const img = $("preview"), show = img.style.display !== "block";
+    img.style.display = show ? "block" : "none";
+    img.src = show ? "/preview.mjpg" : "";
+    $("toggle").textContent = show ? "Hide camera" : "Show camera";
+  };
+  addEventListener("resize", resize);
+  resize();
+  connect();
+})();
+</script>
+</body>
+</html>

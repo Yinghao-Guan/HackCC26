@@ -122,17 +122,23 @@ See the diagram: [shadow-touch-geometry.svg](assets/shadow-touch-geometry.svg).
 
 | Gesture | Used for | Rule |
 |---------|----------|------|
-| One extended finger, touching | Draw (or erase in eraser mode) | Touch detection from section 4 |
-| Thumb and index double tap, in the air | Toggle pen and eraser | Only recognised while **hovering**, never while writing. The pinch hand shape differs from the writing hand shape |
-| One finger drag on a 3D plot | Rotate view | |
-| Two-finger pinch on a 3D plot | Zoom | |
-| Two-finger drag on a 3D plot | Move plot | |
+Agreed with the team (more may be added later):
 
-**Risk: two simultaneous touches.** Two fingertips and two shadows appear in the image; pairing them correctly at an oblique angle is error-prone. Cheaper alternatives, in order:
+| Gesture | Used for | Rule |
+|---------|----------|------|
+| Index finger touching the board | Draw (or erase in eraser mode) | Touch detection from section 4. Never draws while thumb and index are pinched |
+| Thumb and index **double tap** in the air | Toggle pen and eraser | pen → eraser, eraser → pen; with no tool selected the first double tap picks the **eraser**. Two short pinches close together, only while **hovering** |
+| Open hand, then **fist**, then move | Move (pan) the board | The board follows the fist; opening the hand stops it |
+| Thumb and index **pinch and hold**, then move | Rotate a 3D model | A held pinch (longer than a tap), so it is never mistaken for the double tap |
+| **Pinch with both hands**, change the distance | Zoom in (apart) and out (together) | Scale = current distance / starting distance, centred between the two pinches. Needs two tracked hands |
+| **Both hands open**, palms to the camera, held still **2 s** | Reset the view: board position, zoom and 3D angle back to the start | A countdown ring shows on the board; lowering the hands cancels it. **View only**: never restores erased ink or removes writing (that is Undo). A Reset button does the same |
 
-1. Keep one-finger rotate; use an on-screen slider or buttons for zoom and pan.
-2. Use mid-air gestures from hand landmarks for zoom (pinch distance) and pan.
-3. Treat two fingers held together as one wide touch point.
+Telling the gestures apart:
+
+- **Tap or hold:** a double tap is two short pinches; a pinch held longer starts rotating. Decide by how long the pinch lasts.
+- **Writing or pinching:** the index finger only draws when it touches the board with the thumb apart from it.
+- **Two hands:** hand tracking runs with two hands so the two-hand zoom works.
+- **Fallbacks** if a gesture is unreliable on our setup: on-board buttons for the same action (pen/eraser, rotate, zoom, reset).
 
 Opening the panel in step 2 should be a **button on the board**, because a button tap reuses touch detection.
 
@@ -225,4 +231,4 @@ Transport: WebSocket, JSON messages. All positions in projector pixels. Build a 
 - [ ] Is Continuity Camera exposure stable enough when the projector flashes white? If not, use an iOS capture app with locked exposure.
 - [ ] End-to-end latency from finger to stroke?
 - [ ] Does MediaPipe track a hand lit by projected content?
-- [ ] Two-finger pairing: acceptable at our camera angle, or use the fallbacks in section 5?
+- [ ] Are the double tap, fist, pinch-and-hold, two-hand pinch and two-palm reset reliable at our camera angle?

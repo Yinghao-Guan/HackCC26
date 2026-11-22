@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gesture Lab</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #111827; --muted: #6b7280; --line: #e5e7eb;
+    --blue: #2563eb; --blue-soft: #dbeafe; --green: #16a34a; --green-soft: #dcfce7;
+    --orange: #ea580c; --red: #dc2626; --gray: #9ca3af;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 14px 20px;
+    background: var(--card); border-bottom: 1px solid var(--line); }
+  h1 { font-size: 20px; margin: 0 8px 0 0; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+    background: #f3f4f6; font-size: 13px; color: var(--muted); }
+  .chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--gray); }
+  .chip.ok::before { background: var(--green); } .chip.bad::before { background: var(--red); }
+  .chip.warn::before { background: var(--orange); }
+  main { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 20px; padding: 20px;
+    max-width: 1500px; margin: 0 auto; }
+  @media (max-width: 950px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  section h2 { font-size: 15px; margin: 0 0 10px; color: var(--muted); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  /* Camera with the hand skeleton on top */
+  #stage { position: relative; border-radius: 10px; overflow: hidden; background: #e5e7eb; aspect-ratio: 16 / 9; }
+  #stage img, #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #noCam { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); padding: 16px; text-align: center; }
+  .hands { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 12px; }
+  .hand { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .hand h3 { margin: 0 0 6px; font-size: 16px; }
+  .pose { display: inline-block; padding: 1px 8px; border-radius: 6px; font-weight: 700; font-size: 13px; color: #fff; }
+  .measure { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; font-size: 13px; }
+  .measure .v { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+  .hint { color: var(--muted); font-size: 12px; grid-column: 1 / -1; margin-bottom: 4px; }
+  /* Gesture cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .card { background: var(--card); border: 2px solid var(--line); border-radius: 12px; padding: 12px 14px;
+    transition: border-color .2s, background .2s; display: flex; flex-direction: column; gap: 8px; }
+  .card.active { border-color: var(--blue); background: #f8fbff; }
+  .card.fired { border-color: var(--green); background: var(--green-soft); }
+  .card header { all: unset; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .card h3 { margin: 0; font-size: 16px; }
+  .state { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #f3f4f6; color: var(--muted); white-space: nowrap; }
+  .active .state { background: var(--blue-soft); color: var(--blue); }
+  .fired .state { background: #bbf7d0; color: #166534; }
+  .how { margin: 0; color: var(--muted); font-size: 13px; }
+  .visual { height: 110px; display: grid; place-items: center; border-radius: 8px; background: #f9fafb;
+    border: 1px solid var(--line); overflow: hidden; position: relative; }
+  .value { font-size: 13px; display: flex; justify-content: space-between; color: var(--muted); }
+  .value b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  #tool { font-size: 28px; font-weight: 800; letter-spacing: .02em; }
+  #board { position: absolute; inset: 0; background-image: radial-gradient(circle, #cbd5e1 1.5px, transparent 2px);
+    background-size: 22px 22px; }
+  #boardMark { position: absolute; left: 50%; top: 50%; font: 700 22px/1 Georgia, serif; color: var(--blue); }
+  .cube-wrap { perspective: 300px; }
+  #cube { width: 56px; height: 56px; position: relative; transform-style: preserve-3d; }
+  #cube div { position: absolute; inset: 0; border: 2px solid var(--blue); background: rgba(37,99,235,.12); }
+  #cube .f1 { transform: translateZ(28px); } #cube .f2 { transform: rotateY(180deg) translateZ(28px); }
+  #cube .f3 { transform: rotateY(90deg) translateZ(28px); } #cube .f4 { transform: rotateY(-90deg) translateZ(28px); }
+  #cube .f5 { transform: rotateX(90deg) translateZ(28px); } #cube .f6 { transform: rotateX(-90deg) translateZ(28px); }
+  #zoomBox { width: 40px; height: 40px; border: 3px solid var(--blue); border-radius: 6px; background: var(--blue-soft);
+    transition: transform .08s linear; }
+  #ringText { position: absolute; font-weight: 700; font-size: 14px; }
+  /* Activity log */
+  #log { list-style: none; margin: 0; padding: 0; max-height: 260px; overflow: auto; font-size: 14px; }
+  #log li { padding: 6px 2px; border-bottom: 1px solid var(--line); display: flex; gap: 10px; }
+  #log time { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .empty { color: var(--muted); font-size: 14px; }
+  button { font: inherit; font-size: 13px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Gesture Lab</h1>
+  <span id="cConn" class="chip">Connecting…</span>
+  <span id="cCam" class="chip">Camera</span>
+  <span id="cTrk" class="chip">Hand tracking</span>
+  <span id="cCal" class="chip">Calibration</span>
+</header>
+<main>
+  <section>
+    <h2>What the camera sees</h2>
+    <div class="panel">
+      <div id="stage">
+        <img id="preview" alt="Live camera view" hidden style="transform: scaleX(-1)">
+        <canvas id="skeleton" aria-hidden="true"></canvas>
+        <div id="noCam">Waiting for the camera…</div>
+      </div>
+      <div id="hands" class="hands"><p class="empty">Hold a hand up in front of the camera.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Gestures</h2>
+    <div class="cards">
+      <article class="card" id="g-tap">
+        <header><h3>1 · Pen / eraser</h3><span class="state">Idle</span></header>
+        <p class="how">Pinch thumb and index together <b>twice, quickly</b>, in the air.</p>
+        <div class="visual"><span id="tool">None</span></div>
+        <div class="value"><span>First double tap picks the eraser</span><span>Seen <b data-count>0</b>×</span></div>
+      </article>
+      <article class="card" id="g-pan">
+        <header><h3>2 · Move the board</h3><span class="state">Idle</span></header>
+        <p class="how">Make a <b>fist</b>, move it, then <b>open your hand</b> to stop.</p>
+        <div class="visual"><div id="board"></div><span id="boardMark">x²</span></div>
+        <div class="value"><span>Moved <b id="panText">0, 0</b> px</span><span>Seen <b data-count>0</b>×</span></div>
+      </article>
+      <article class="card" id="g-rotate">
+        <header><h3>3 · Turn a 3D model</h3><span class="state">Idle</span></header>
+        <p class="how"><b>Pinch and hold</b> for half a second, then move your hand.</p>
+        <div class="visual cube-wrap"><div id="cube"><div class="f1"></div><div class="f2"></div><div class="f3"></div><div class="f4"></div><div class="f5"></div><div class="f6"></div></div></div>
+        <div class="value"><span>Turned <b id="rotText">0°, 0°</b></span><span>Seen <b data-count>0</b>×</span></div>
+      </article>
+      <article class="card" id="g-zoom">
+        <header><h3>4 · Zoom</h3><span class="state">Idle</span></header>
+        <p class="how"><b>Pinch with both hands</b>, then pull them apart (in) or together (out).</p>
+        <div class="visual"><div id="zoomBox"></div></div>
+        <div class="value"><span>Zoom <b id="zoomText">1.00×</b></span><span>Seen <b data-count>0</b>×</span></div>
+      </article>
+      <article class="card" id="g-reset">
+        <header><h3>5 · Reset the view</h3><span class="state">Idle</span></header>
+        <p class="how">Hold <b>both hands open</b>, palms to the camera, <b>still for 2 seconds</b>.</p>
+        <div class="visual">
+          <svg width="96" height="96" viewBox="0 0 96 96" aria-label="Reset countdown">
+            <circle cx="48" cy="48" r="38" fill="none" stroke="#e5e7eb" stroke-width="10"/>
+            <circle id="ring" cx="48" cy="48" r="38" fill="none" stroke="#2563eb" stroke-width="10" stroke-linecap="round"
+              stroke-dasharray="238.8" stroke-dashoffset="238.8" transform="rotate(-90 48 48)"/>
+          </svg>
+          <span id="ringText">0%</span>
+        </div>
+        <div class="value"><span>Puts back board position, zoom and 3D turn</span><span>Seen <b data-count>0</b>×</span></div>
+      </article>
+    </div>
+
+    <h2 style="margin-top:20px">What happened <button id="clearLog" type="button">Clear</button></h2>
+    <div class="panel"><ul id="log"><li class="empty">Gestures you make will be listed here.</li></ul></div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],
+    [9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+  const POSE_COLOR = { pinch: "#16a34a", fist: "#ea580c", open: "#2563eb", point: "#6b7280", other: "#9ca3af" };
+  const POSE_NAME = { pinch: "Pinch", fist: "Fist", open: "Open hand", point: "Pointing (drawing)", other: "Other" };
+  const PINCH_CLOSE = 0.30, PINCH_OPEN = 0.45;
+  let socket = null, cameraSize = [1280, 720], calibrated = false;
+  const view = { tool: "none", panX: 0, panY: 0, zoom: 1, zoomBase: 1, rotX: 0, rotY: 0 };
+  const moveStart = {};
+
+  // -- status chips ---------------------------------------------------------
+  function chip(id, text, tone) { const el = $(id); el.textContent = text; el.className = `chip ${tone || ""}`; }
+
+  // -- activity log ---------------------------------------------------------
+  function log(text) {
+    const list = $("log");
+    list.querySelector(".empty")?.remove();
+    const li = document.createElement("li");
+    const time = document.createElement("time");
+    time.textContent = new Date().toLocaleTimeString();
+    const span = document.createElement("span");
+    span.textContent = text;
+    li.append(time, span);
+    list.prepend(li);
+    while (list.childElementCount > 80) list.lastChild.remove();
+  }
+  $("clearLog").onclick = () => { $("log").replaceChildren(); };
+
+  // -- gesture cards --------------------------------------------------------
+  const fireTimers = {};
+  function setCard(id, state) {
+    const card = $(id);
+    card.classList.toggle("active", state === "active");
+    card.classList.toggle("fired", state === "fired");
+    card.querySelector(".state").textContent = state === "active" ? "In progress" : state === "fired" ? "Triggered ✓" : "Idle";
+  }
+  function fire(id) {
+    const counter = $(id).querySelector("[data-count]");
+    counter.textContent = String(Number(counter.textContent) + 1);
+    setCard(id, "fired");
+    clearTimeout(fireTimers[id]);
+    fireTimers[id] = setTimeout(() => setCard(id, "idle"), 1200);
+  }
+  function render() {
+    $("tool").textContent = view.tool === "none" ? "None" : view.tool === "pen" ? "Pen" : "Eraser";
+    $("tool").style.color = view.tool === "eraser" ? "var(--orange)" : view.tool === "pen" ? "var(--blue)" : "var(--muted)";
+    $("panText").textContent = `${view.panX.toFixed(0)}, ${view.panY.toFixed(0)}`;
+    $("board").style.backgroundPosition = `${view.panX}px ${view.panY}px`;
+    $("boardMark").style.transform = `translate(calc(-50% + ${view.panX}px), calc(-50% + ${view.panY}px))`;
+    const ax = (view.rotY * 0.6) % 360, ay = (view.rotX * 0.6) % 360;
+    $("cube").style.transform = `rotateX(${-ax}deg) rotateY(${ay}deg)`;
+    $("rotText").textContent = `${ay.toFixed(0)}°, ${(-ax).toFixed(0)}°`;
+    $("zoomBox").style.transform = `scale(${Math.min(view.zoom, 2.6)})`;
+    $("zoomText").textContent = `${view.zoom.toFixed(2)}×`;
+  }
+  function ring(progress) {
+    $("ring").setAttribute("stroke-dashoffset", String(238.8 * (1 - progress)));
+    $("ringText").textContent = `${Math.round(progress * 100)}%`;
+  }
+
+  function onGesture(e) {
+    const unit = calibrated ? "px" : "camera px";
+    if (e.type === "gesture" && e.name === "double_tap") {
+      view.tool = view.tool === "eraser" ? "pen" : "eraser";
+      fire("g-tap");
+      log(`Double tap (${e.hand} hand) → tool is now ${view.tool === "pen" ? "Pen" : "Eraser"}`);
+    } else if (e.type === "gesture" && e.name === "reset") {
+      Object.assign(view, { panX: 0, panY: 0, zoom: 1, zoomBase: 1, rotX: 0, rotY: 0 });
+      fire("g-reset"); ring(0);
+      log("Reset → board position, zoom and 3D turn are back to the start (writing untouched)");
+    } else if (e.type === "reset_progress") {
+      ring(e.progress);
+      setCard("g-reset", e.progress > 0 && e.progress < 1 ? "active" : $("g-reset").classList.contains("fired") ? "fired" : "idle");
+    } else if (e.type === "pan") {
+      if (e.phase === "start") { setCard("g-pan", "active"); moveStart.pan = [view.panX, view.panY]; log(`Fist (${e.hand} hand) → moving the board`); }
+      if (e.phase === "move") { view.panX += e.dx; view.panY += e.dy; }
+      if (e.phase === "end") {
+        const [sx, sy] = moveStart.pan || [0, 0];
+        fire("g-pan");
+        log(`Hand opened → board moved ${(view.panX - sx).toFixed(0)}, ${(view.panY - sy).toFixed(0)} ${unit}`);
+      }
+    } else if (e.type === "rotate") {
+      if (e.phase === "start") { setCard("g-rotate", "active"); moveStart.rot = [view.rotX, view.rotY]; log(`Pinch held (${e.hand} hand) → turning the 3D model`); }
+      if (e.phase === "move") { view.rotX += e.dx; view.rotY += e.dy; }
+      if (e.phase === "end") { fire("g-rotate"); log("Pinch released → stopped turning"); }
+    } else if (e.type === "zoom") {
+      if (e.phase === "start") { view.zoomBase = view.zoom; setCard("g-zoom", "active"); log("Two pinches → zooming"); }
+      if (e.phase === "move" || e.phase === "end") view.zoom = view.zoomBase * e.scale;
+      if (e.phase === "end") { fire("g-zoom"); log(`Pinches released → zoom is ${view.zoom.toFixed(2)}×`); }
+    }
+    render();
+  }
+
+  // -- the hands: skeleton on the camera image, and measurements ------------
+  function drawHands(hands) {
+    const canvas = $("skeleton"), img = $("preview"), ctx = canvas.getContext("2d");
+    const rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    const [cw, ch] = img.naturalWidth ? [img.naturalWidth, img.naturalHeight] : cameraSize;
+    // object-fit: contain -> letterboxed image area
+    const scale = Math.min(rect.width / cw, rect.height / ch);
+    const ox = (rect.width - cw * scale) / 2, oy = (rect.height - ch * scale) / 2;
+    // Before calibration the view is mirrored (like a selfie), matching the gesture moves.
+    const at = ([x, y]) => [ox + (calibrated ? x : cw - x) * scale, oy + y * scale];
+    for (const h of hands) {
+      const pts = h.camera_points.map(at), color = POSE_COLOR[h.pose] || "#9ca3af";
+      ctx.lineWidth = 3; ctx.strokeStyle = color; ctx.lineCap = "round";
+      for (const [a, b] of BONES) { ctx.beginPath(); ctx.moveTo(...pts[a]); ctx.lineTo(...pts[b]); ctx.stroke(); }
+      ctx.fillStyle = "#fff";
+      for (const p of pts) { ctx.beginPath(); ctx.arc(p[0], p[1], 3.5, 0, 7); ctx.fill(); ctx.stroke(); }
+      // thumb-to-index gap: green when it counts as a pinch
+      ctx.setLineDash(h.gap < PINCH_CLOSE ? [] : [5, 5]);
+      ctx.strokeStyle = h.gap < PINCH_CLOSE ? "#16a34a" : "#9ca3af";
+      ctx.beginPath(); ctx.moveTo(...pts[4]); ctx.lineTo(...pts[8]); ctx.stroke(); ctx.setLineDash([]);
+      const [wx, wy] = pts[0];
+      const text = `${h.hand} · ${POSE_NAME[h.pose] || h.pose}`;
+      ctx.font = "600 14px system-ui, sans-serif";
+      const w = ctx.measureText(text).width + 14;
+      ctx.fillStyle = color; ctx.fillRect(wx - w / 2, wy + 10, w, 22);
+      ctx.fillStyle = "#fff"; ctx.fillText(text, wx - w / 2 + 7, wy + 26);
+    }
+  }
+
+  function showReadouts(hands) {
+    const box = $("hands");
+    if (!hands.length) {
+      const p = document.createElement("p"); p.className = "empty";
+      p.textContent = "No hands seen. Hold a hand up in front of the camera.";
+      box.replaceChildren(p); return;
+    }
+    box.replaceChildren(...hands.map((h) => {
+      const card = document.createElement("div"); card.className = "hand";
+      const title = document.createElement("h3");
+      const badge = document.createElement("span"); badge.className = "pose";
+      badge.textContent = POSE_NAME[h.pose] || h.pose; badge.style.background = POSE_COLOR[h.pose] || "#9ca3af";
+      title.append(`${h.hand} hand  `, badge);
+      const grid = document.createElement("div"); grid.className = "measure";
+      const rows = [
+        ["Thumb–index gap", h.gap.toFixed(2), `Pinch below ${PINCH_CLOSE.toFixed(2)}, lets go above ${PINCH_OPEN.toFixed(2)}`],
+        ["Fingers curled", `${h.curled} of 4`, "Fist needs 4 of 4"],
+        ["Fingers straight", `${h.extended} of 4`, "Open hand needs 4 of 4 and the thumb out"],
+      ];
+      for (const [label, value, hint] of rows) {
+        const a = document.createElement("span"); a.textContent = label;
+        const b = document.createElement("span"); b.className = "v"; b.textContent = value;
+        const c = document.createElement("span"); c.className = "hint"; c.textContent = hint;
+        grid.append(a, b, c);
+      }
+      card.append(title, grid);
+      return card;
+    }));
+  }
+
+  // -- connection -----------------------------------------------------------
+  function onEvent(e) {
+    switch (e.type) {
+      case "camera":
+        if (e.status === "ok") {
+          if (e.width) cameraSize = [e.width, e.height];
+          chip("cCam", `Camera ${e.width}×${e.height}`, "ok");
+          if (!$("preview").src) {
+            // Shown as soon as the stream starts (browsers don't reliably fire onload for MJPEG).
+            $("preview").src = "/preview.mjpg";
+            $("preview").hidden = false;
+          }
+          $("noCam").style.display = "none";
+        } else {
+          chip("cCam", `Camera ${e.status}: ${e.message}`, "bad");
+          $("noCam").textContent = e.message || "No camera."; $("noCam").style.display = "grid";
+        }
+        break;
+      case "tracking":
+        chip("cTrk", e.status === "ok" ? "Hand tracking on" : `Hand tracking ${e.status}: ${e.message}`, e.status === "ok" ? "ok" : "bad");
+        break;
+      case "calibration":
+        calibrated = e.status === "ok";
+        $("preview").style.transform = calibrated ? "" : "scaleX(-1)";
+        chip("cCal", calibrated ? "Calibrated: moves in board px" : "Not calibrated: mirror view, moves in camera px", calibrated ? "ok" : "warn");
+        break;
+      case "hands": drawHands(e.hands); showReadouts(e.hands); break;
+      case "gesture": case "pan": case "rotate": case "zoom": case "reset_progress": onGesture(e); break;
+    }
+  }
+
+  function connect() {
+    socket = new WebSocket(`ws://${location.host}/ws`);
+    socket.onopen = () => {
+      chip("cConn", "Connected", "ok");
+      // "operator": this page must not change the board size.
+      socket.send(JSON.stringify({ type: "hello", width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1, role: "operator" }));
+    };
+    socket.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (err) { console.error(err); } };
+    socket.onclose = () => { chip("cConn", "Disconnected: is the CV service running? Retrying…", "bad"); setTimeout(connect, 1000); };
+  }
+
+  render(); ring(0);
+  connect();
+})();
+</script>
+</body>
+</html>

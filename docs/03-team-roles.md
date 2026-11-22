@@ -24,7 +24,7 @@ Own: hand tracking, shadow-based touch detection, pen strokes.
 
 Own: calibration, gestures, reading physical content.
 
-- Recognise the double tap gesture (thumb and index finger, in the air).
+- Recognise the agreed gestures (technical design, section 5): double tap (thumb and index, in the air), fist to move the board, pinch and hold to rotate a 3D model, two-hand pinch to zoom, and reset.
 - Read printed sheets and marker writing on the board, and know **where** they are (bounding boxes in projector pixels).
 - Control the flash: ask for pure white or black at the right moment, and capture.
 - **Proposed:** B also owns ArUco calibration, the homography, verification, the drift monitor and automatic re-calibration (it already controls when the projector goes white or black).
@@ -81,7 +81,7 @@ Own: all model and voice integration.
 | Last | Step 3 in full: physical reading plus 3D with gestures |
 | Stretch | Re-calibration finale (nearly free if calibration is automatic) |
 
-Cut order if time runs short: two-finger gestures → physical reading → circling the wrong step (keep the text explanation).
+Cut order if time runs short: two-hand zoom → physical reading → circling the wrong step (keep the text explanation).
 
 ## 5. Timeline (assuming about 20 hours of real development)
 

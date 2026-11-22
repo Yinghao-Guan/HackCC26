@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Board Calibration</title>
+<style>
+  /* Light on purpose: a dark page hides the finger's shadow on the board. */
+  :root { --ink: #171717; --muted: #6b7280; --line: #e5e7eb; --ok: #16a34a; --warn: #d97706;
+    --bad: #dc2626; --accent: #2563eb; --panel: #ffffff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #ffffff; color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; position: relative; z-index: 1; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { margin: 4px 0; }
+  .muted { color: var(--muted); }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  /* ArUco calibration pattern: pure white page, crisp black-and-white markers. */
+  #pattern { position: fixed; inset: 0; background: #ffffff; display: none; z-index: 50; }
+  #pattern img { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;
+    background: #f9fafb; color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line); background: #f9fafb; }
+  .status.ok { border-color: var(--ok); } .status.stale { border-color: var(--warn); }
+  .status.error { border-color: var(--bad); }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
+  .ok .dot { background: var(--ok); } .stale .dot { background: var(--warn); } .error .dot { background: var(--bad); }
+  #stage { position: relative; width: 100%; border: 1px solid var(--line); border-radius: 8px;
+    overflow: hidden; background: #f3f4f6; cursor: crosshair; user-select: none; }
+  #stage img { display: block; width: 100%; height: auto; }
+  #stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #hint { font-weight: 600; }
+  label { display: inline-flex; gap: 6px; align-items: center; }
+  /* What a board page draws (only shown when this screen is the projector). */
+  #board { position: fixed; inset: 0; pointer-events: none; z-index: 0; }
+  .target { position: absolute; width: 0; height: 0; }
+  .target::before, .target::after { content: ""; position: absolute; background: #000; }
+  .target::before { left: -40px; top: -2px; width: 80px; height: 4px; }
+  .target::after { left: -2px; top: -40px; width: 4px; height: 80px; }
+  .target span { position: absolute; left: 14px; top: 10px; font: 700 28px/1 system-ui, sans-serif; }
+  .probe { position: absolute; width: 0; height: 0; }
+  .probe::before, .probe::after { content: ""; position: absolute; background: var(--bad); }
+  .probe::before { left: -18px; top: -1.5px; width: 36px; height: 3px; }
+  .probe::after { left: -1.5px; top: -18px; width: 3px; height: 36px; }
+</style>
+</head>
+<body>
+<div id="board" aria-hidden="true"></div>
+<div id="pattern" aria-hidden="true"></div>
+<main>
+  <h1>Board calibration</h1>
+  <p class="muted">Maps the camera image to the board page so a finger on the board lands in the right place.</p>
+
+  <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting…</span></div>
+
+  <div class="bar">
+    <button id="auto" class="primary" type="button">Auto calibrate (markers)</button>
+    <button id="start" type="button">Manual: show targets</button>
+    <button id="undo" type="button" disabled>Undo last click</button>
+    <button id="cancel" type="button">Cancel</button>
+    <label><input id="check" type="checkbox"> Check mode: click to show a red cross on the board</label>
+  </div>
+  <div class="bar">
+    <label><input id="isBoard" type="checkbox"> This screen is the projector (one mirrored screen)</label>
+  </div>
+
+  <p id="hint">Press "Auto calibrate" (the board shows a grid of markers for a few seconds), or calibrate by hand with "Manual: show targets".</p>
+  <div id="stage">
+    <img id="preview" alt="Live camera image">
+    <canvas id="marks"></canvas>
+  </div>
+  <p class="muted" id="camInfo">Camera: ?</p>
+</main>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const NAMES = ["top-left", "top-right", "bottom-right", "bottom-left"];
+  const url = `ws://${location.host}/ws`;
+  let socket = null, clicks = [], targetsShown = false;
+
+  function send(message) {
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message));
+  }
+
+  function sendHello() {
+    send({ type: "hello", width: innerWidth, height: innerHeight, dpr: devicePixelRatio || 1,
+      role: $("isBoard").checked ? "board" : "operator" });
+  }
+
+  // -- camera image and clicks ------------------------------------------------
+  function imageSize() {
+    const img = $("preview");
+    return [img.naturalWidth, img.naturalHeight];
+  }
+
+  function toCamera(event) {
+    const img = $("preview"), rect = img.getBoundingClientRect();
+    const [w, h] = imageSize();
+    return [(event.clientX - rect.left) * w / rect.width, (event.clientY - rect.top) * h / rect.height];
+  }
+
+  function drawMarks() {
+    const canvas = $("marks"), img = $("preview"), ctx = canvas.getContext("2d");
+    const rect = img.getBoundingClientRect(), dpr = devicePixelRatio || 1;
+    canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    const [w, h] = imageSize();
+    if (!w) return;
+    const sx = rect.width / w, sy = rect.height / h;
+    ctx.lineWidth = 2; ctx.font = "600 16px system-ui, sans-serif";
+    clicks.forEach(([x, y], i) => {
+      const px = x * sx, py = y * sy;
+      ctx.strokeStyle = "#2563eb"; ctx.fillStyle = "#2563eb";
+      ctx.beginPath(); ctx.arc(px, py, 7, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px - 12, py); ctx.lineTo(px + 12, py); ctx.moveTo(px, py - 12); ctx.lineTo(px, py + 12); ctx.stroke();
+      ctx.fillText(String(i + 1), px + 10, py - 10);
+      if (i > 0) { const [qx, qy] = clicks[i - 1]; ctx.beginPath(); ctx.moveTo(qx * sx, qy * sy); ctx.lineTo(px, py); ctx.stroke(); }
+    });
+    if (clicks.length === 4) { const [qx, qy] = clicks[0], [lx, ly] = clicks[3]; ctx.beginPath(); ctx.moveTo(lx * sx, ly * sy); ctx.lineTo(qx * sx, qy * sy); ctx.stroke(); }
+  }
+
+  function updateHint() {
+    $("undo").disabled = clicks.length === 0;
+    if ($("check").checked) { $("hint").textContent = "Check mode: click anywhere on the board in the camera image; a red cross should appear there on the board."; return; }
+    if (!targetsShown) { $("hint").textContent = 'Press "Auto calibrate", or "Manual: show targets" and click the centre of each target in order 1 → 4.'; return; }
+    $("hint").textContent = clicks.length < 4
+      ? `Click the centre of target ${clicks.length + 1} (${NAMES[clicks.length]}).`
+      : "Calibrating…";
+  }
+
+  $("stage").addEventListener("click", (event) => {
+    const [w, h] = imageSize();
+    if (!w) return;
+    const point = toCamera(event);
+    if ($("check").checked) { send({ type: "map_point", camera_point: point }); return; }
+    if (!targetsShown || clicks.length >= 4) return;
+    clicks.push(point);
+    drawMarks(); updateHint();
+    if (clicks.length === 4) send({ type: "calibrate_manual", camera_points: clicks, camera_size: [w, h] });
+  });
+
+  $("auto").onclick = () => { clicks = []; $("check").checked = false; drawMarks(); send({ type: "calibrate_auto" }); };
+  $("start").onclick = () => { clicks = []; $("check").checked = false; drawMarks(); send({ type: "calibrate_manual_start" }); };
+  $("cancel").onclick = () => { clicks = []; drawMarks(); send({ type: "calibrate_cancel" }); };
+  $("undo").onclick = () => { clicks.pop(); drawMarks(); updateHint(); };
+  $("check").onchange = updateHint;
+  $("isBoard").onchange = () => { sendHello(); $("board").style.display = $("isBoard").checked ? "block" : "none"; };
+
+  // -- board drawing (when this screen is the projector) ----------------------
+  function showTargets(targets) {
+    $("board").querySelectorAll(".target").forEach((el) => el.remove());
+    for (const t of targets) {
+      const el = document.createElement("div");
+      el.className = "target"; el.style.left = `${t.x}px`; el.style.top = `${t.y}px`;
+      el.innerHTML = `<span>${t.id}</span>`;
+      $("board").appendChild(el);
+    }
+  }
+
+  // Draw the ArUco grid the server sent, then tell it the pattern is really on screen.
+  function showPattern(markers, confirm, run) {
+    const layer = $("pattern");
+    layer.replaceChildren();
+    if (!markers.length) { layer.style.display = "none"; return; }
+    const loads = markers.map((m) => new Promise((resolve) => {
+      const img = new Image();
+      img.alt = ""; img.onload = () => resolve(true); img.onerror = () => resolve(false);
+      img.src = m.png;
+      Object.assign(img.style, { left: `${m.x}px`, top: `${m.y}px`, width: `${m.size}px`, height: `${m.size}px` });
+      layer.appendChild(img);
+    }));
+    layer.style.display = "block";
+    if (!confirm) return;
+    // Confirm only when every marker really loaded, echoing the run number.
+    Promise.all(loads).then((ok) => { if (ok.every(Boolean)) requestAnimationFrame(() => requestAnimationFrame(
+      () => send({ type: "calibration_pattern_shown", run }))); });
+  }
+
+  function showProbe(e) {
+    const el = document.createElement("div");
+    el.className = "probe"; el.style.left = `${e.x}px`; el.style.top = `${e.y}px`;
+    $("board").appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  // -- events from the server -------------------------------------------------
+  function showStatus(e) {
+    const box = $("status");
+    box.className = `status ${e.status}`;
+    const detail = e.status === "ok" ? `Calibrated (${e.method}, ${e.points} points, error ${e.reproj_error_px} px).` : e.message;
+    $("statusText").textContent = `Calibration: ${e.status}. ${detail || ""}`;
+  }
+
+  function onEvent(e) {
+    switch (e.type) {
+      case "calibration":
+        showStatus(e);
+        if (e.status === "error") { clicks = []; drawMarks(); }
+        break;
+      case "calibration_targets":
+        targetsShown = e.targets.length > 0;
+        if (!targetsShown) { clicks = []; drawMarks(); }
+        showTargets(e.targets);
+        break;
+      case "calibration_probe": showProbe(e); break;
+      // Only draw (and confirm) the pattern when this screen is the projector.
+      case "calibration_pattern": showPattern($("isBoard").checked ? e.markers : [], true, e.run); break;
+      case "camera":
+        $("camInfo").textContent = e.status === "ok" ? `Camera ${e.index}: ${e.width}×${e.height}` : `Camera ${e.status}: ${e.message}`;
+        if (e.status === "ok" && !$("preview").src) $("preview").src = "/preview.mjpg";
+        break;
+      case "error": $("hint").textContent = e.message; break;
+    }
+    updateHint();
+  }
+
+  function connect() {
+    socket = new WebSocket(url);
+    socket.onopen = sendHello;
+    socket.onmessage = (m) => { try { onEvent(JSON.parse(m.data)); } catch (err) { console.error(err); } };
+    socket.onclose = () => {
+      $("status").className = "status error";
+      $("statusText").textContent = "Disconnected from the CV service. Retrying…";
+      setTimeout(connect, 1000);
+    };
+  }
+
+  $("board").style.display = "none";
+  $("preview").addEventListener("load", drawMarks);
+  addEventListener("resize", () => { drawMarks(); if ($("isBoard").checked) sendHello(); });
+  connect();
+})();
+</script>
+</body>
+</html>

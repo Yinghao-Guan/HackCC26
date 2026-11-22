@@ -26,7 +26,7 @@ If these pass, the main hardware risk is largely gone.
 4. [ ] **Static markers** stuck around the board and detected.
 5. [ ] **Calibrate** (one click, section 3). Check reprojection error and the cross check: project a cross, touch it, see the offset.
 6. [ ] **Touch threshold**: draw lines in the centre and corners; check for gaps, false touches, missed touches.
-7. [ ] **Gestures**: double tap triggers reliably; writing does not trigger it by accident.
+7. [ ] **Gestures**: double tap, fist-move, pinch-and-hold rotate, two-hand zoom and reset each trigger reliably; writing never triggers any of them.
 8. [ ] **Physical read test**: flash white/black and read printed or marker text correctly.
 9. [ ] **Network**: measure latency; check API keys; hotspot ready as backup.
 10. [ ] **Rehearse** the full demo twice: once normal, once with a disturbance (tap the table, block the beam briefly).

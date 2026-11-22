@@ -120,7 +120,7 @@ Likelihood and impact are team estimates, to be revisited after the first tests.
 | 3 | Camera exposure drifts on flash | Medium | High | Lock exposure; test | Capture app on iPhone |
 | 4 | Board or setup moves | Medium | High | Easel, clamps, weights, tape; drift monitor | Re-calibrate |
 | 5 | Venue light too bright | Medium | Medium | Bright projector; blackout cloth | Move to a darker corner |
-| 6 | Two-finger gestures mis-pair | High | Medium | Test at the real angle | One-finger rotate plus sliders; air gestures |
+| 6 | Gestures confused with each other or with writing (tap vs hold, pinch vs touch, two hands) | Medium | Medium | Test at the real angle; timing rules; never draw while pinched | On-board buttons for the same actions |
 | 7 | Hand lit by projection confuses tracking | Medium | Medium | Test early; adjust UI brightness near hand | Dim the area around the hand |
 | 8 | Network or API trouble | Medium | High | Phone hotspot; test latency on site | Pre-recorded video; cached example responses |
 | 9 | Dev and demo venues differ | High | Medium | Automatic calibration; full checklist ([05](05-setup-checklist.md)) | Reserve 1 to 2 hours at the demo spot |
