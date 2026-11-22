@@ -20,19 +20,32 @@
   #log { margin: 8px 0 0; max-height: 140px; overflow: auto; font: 12px/1.35 ui-monospace, Consolas, monospace;
     white-space: pre-wrap; border-top: 1px solid var(--line); padding-top: 6px; }
   #preview { display: none; width: 100%; margin-top: 8px; border-radius: 6px; border: 1px solid var(--line); }
+  /* Calibration targets and check crosses, in board pixels (CSS px of this page). */
+  #overlay { position: fixed; inset: 0; pointer-events: none; }
+  .target { position: absolute; width: 0; height: 0; }
+  .target::before, .target::after { content: ""; position: absolute; background: #000; }
+  .target::before { left: -40px; top: -2px; width: 80px; height: 4px; }
+  .target::after { left: -2px; top: -40px; width: 4px; height: 80px; }
+  .target span { position: absolute; left: 14px; top: 10px; font: 700 28px/1 system-ui, sans-serif; }
+  .probe { position: absolute; width: 0; height: 0; }
+  .probe::before, .probe::after { content: ""; position: absolute; background: var(--bad); }
+  .probe::before { left: -18px; top: -1.5px; width: 36px; height: 3px; }
+  .probe::after { left: -1.5px; top: -18px; width: 3px; height: 36px; }
   button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; cursor: pointer; }
 </style>
 </head>
 <body>
 <canvas id="board" aria-label="Pointer events drawn as ink"></canvas>
+<div id="overlay" aria-hidden="true"></div>
 <div id="panel">
   <h1>CV bus debug: WebSocket <span id="url" class="muted"></span></h1>
   <div class="row"><span>Connection</span><span id="conn" class="bad">connecting…</span></div>
   <div class="row"><span>Camera</span><span id="cam" class="muted">?</span></div>
+  <div class="row"><span>Calibration</span><span id="cal" class="muted">?</span></div>
   <div class="row"><span>Display sent</span><span id="disp" class="muted">?</span></div>
   <div class="row"><span>Pointer</span><span id="ptr" class="muted">none yet</span></div>
   <div class="row"><span>Round trip</span><span id="rtt" class="muted">?</span></div>
-  <div class="row"><button id="toggle" type="button">Show camera</button><button id="clear" type="button">Clear ink</button></div>
+  <div class="row"><button id="toggle" type="button">Show camera</button><a href="/calibrate" target="_blank">Calibrate…</a><button id="clear" type="button">Clear ink</button></div>
   <img id="preview" alt="Live camera preview">
   <div id="log"></div>
 </div>
@@ -79,9 +92,36 @@
     lastPoint = e.touching ? { x: e.x, y: e.y } : null;
   }
 
+  function showTargets(targets) {
+    $("overlay").querySelectorAll(".target").forEach((el) => el.remove());
+    for (const t of targets) {
+      const el = document.createElement("div");
+      el.className = "target"; el.style.left = `${t.x}px`; el.style.top = `${t.y}px`;
+      el.innerHTML = `<span>${t.id}</span>`;
+      $("overlay").appendChild(el);
+    }
+    // Hide the panel while targets show, so it never covers one.
+    $("panel").style.visibility = targets.length ? "hidden" : "visible";
+  }
+
+  function showProbe(e) {
+    const el = document.createElement("div");
+    el.className = "probe"; el.style.left = `${e.x}px`; el.style.top = `${e.y}px`;
+    $("overlay").appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
   function onEvent(e) {
     switch (e.type) {
       case "pointer": drawPointer(e); return;
+      case "calibration_targets": showTargets(e.targets); break;
+      case "calibration_probe": showProbe(e); break;
+      case "calibration": {
+        const el = $("cal");
+        el.textContent = e.status === "ok" ? `ok (${e.method}, ${e.reproj_error_px} px)` : `${e.status}: ${e.message}`;
+        el.className = e.status === "ok" ? "ok" : "bad";
+        break;
+      }
       case "camera": {
         const el = $("cam");
         el.textContent = e.status === "ok" ? `ok ${e.width}×${e.height} ${e.fps ?? ""}fps` : `${e.status}: ${e.message}`;
