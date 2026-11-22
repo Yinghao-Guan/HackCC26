@@ -9,8 +9,16 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { BOARD_CHANNEL, isBoardMessage, type BoardMessage } from "@/lib/boardLink";
+import {
+  BOARD_CHANNEL,
+  isBoardMessage,
+  type BoardMessage,
+  type CalibrationScreen,
+  type ShareRect,
+} from "@/lib/boardLink";
+import { findWriting, pictureSize, straighten } from "./boardPicture";
 import { calibrationFrom, type Calibration } from "./calibrate";
+import { invertMatrix } from "./homography";
 import { createHandTracker, type Bone, type Hand, type HandTracker } from "./handTracker";
 import { luminanceAround, meanLuminance, paintDarkMask } from "./luma";
 import { Pen } from "./pen";
@@ -68,10 +76,21 @@ const DEFAULT_SKIN_TOLERANCE = 0.06;
 const DEFAULT_TOUCH_BELOW = 0.1;
 const DEFAULT_SMOOTHING = 1.5; // Hz: how steady the pen is held (lower is steadier but lags more)
 const CALIBRATION_KEY = "hackcc26.calibration";
-const CALIBRATION_HIDE_MS = 1200; // time for the whiteboard to take its markers down
+const CALIBRATION_HIDE_MS = 2000; // time for the whiteboard to turn white, and the camera's exposure to settle
 const CALIBRATION_SHOW_MS = 1500; // time for the whiteboard to put its markers up
+const CALIBRATION_SHOW_FOUND_MS = 10_000; // how long the markers found stay circled on the picture
 const CALIBRATION_FRAMES = 6; // frames averaged into each of the two calibration pictures
 const BOARD_ALIVE_MS = 2500; // the whiteboard is gone if it has not been heard from for this long
+// Taking a picture of the marker writing for the whiteboard:
+const HAND_FREE_MS = 300; // the hand must be out of view this long first
+const PICTURE_TIMEOUT_MS = 6000; // give up if it does not go away in this time
+const BLANK_SETTLE_MS = 500; // time for the projector and the camera to show the cleared board
+const PICTURE_FRAMES = 3; // frames averaged into the picture
+// Keeping the picture of the empty board up to date while no hand is in view:
+const NO_HAND_MS = 1500; // the hand must have been gone this long
+const STABLE_FRAMES = 10; // and the picture still for this many frames
+const MOTION_LIMIT = 1.5; // still: the average change between frames is below this (0 to 255)
+const AUTO_REFERENCE_EVERY_MS = 3000; // at most this often
 const REFERENCE_FRAMES = 10; // frames averaged into the picture of the empty board
 const COUNTDOWN_MS = 3000; // time to take your hand away before the empty board is captured
 const TRACE_MS = 6000; // how much of the gap's history the trace shows
@@ -145,6 +164,39 @@ interface CalibrationJob {
   before: Float32Array | null;
 }
 
+/** A picture of the marker writing that the whiteboard asked for. */
+interface PictureJob {
+  id: number;
+  /** The whiteboard's drawing area, as shares of its window. */
+  area: ShareRect;
+  /** Waiting for the hand to leave, waiting for the cleared board to show, or collecting frames. */
+  phase: "wait" | "blank" | "grab";
+  started: number;
+  handFreeSince: number | null;
+  until: number;
+  sum: Float32Array | null;
+  count: number;
+}
+
+/** A gray picture as a PNG data URL. */
+function grayToDataUrl(picture: { gray: Uint8ClampedArray; width: number; height: number }): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = picture.width;
+  canvas.height = picture.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return "";
+  const image = ctx.createImageData(picture.width, picture.height);
+  for (let i = 0; i < picture.gray.length; i++) {
+    const level = picture.gray[i];
+    image.data[i * 4] = level;
+    image.data[i * 4 + 1] = level;
+    image.data[i * 4 + 2] = level;
+    image.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
 /** One moment of the shadow touch reading, for the trace. */
 interface GapSample {
   t: number;
@@ -173,6 +225,11 @@ interface Readout {
   /** Is the whiteboard window open and answering? */
   linked: boolean;
   calibration: CalibrationStatus;
+  /** What the whiteboard says the pointer is over ("board", a button's name), or null. */
+  pointerOver: string | null;
+  pointerTouching: boolean;
+  /** The last button the pointer clicked on the whiteboard, and how long ago. */
+  lastClick: string | null;
   /** What is happening with a snapshot being saved, if anything. */
   snapshot: string | null;
   fps: number;
@@ -200,6 +257,9 @@ const EMPTY_READOUT: Readout = {
   writing: false,
   linked: false,
   calibration: { kind: "none" },
+  pointerOver: null,
+  pointerTouching: false,
+  lastClick: null,
   snapshot: null,
   fps: 0,
   inferenceMs: null,
@@ -663,6 +723,8 @@ export function CameraTest() {
   const [touchBelow, setTouchBelow] = useState(DEFAULT_TOUCH_BELOW);
   const [sendToBoard, setSendToBoard] = useState(true);
   const [smoothing, setSmoothing] = useState(DEFAULT_SMOOTHING);
+  // Off by default: writing is done with a marker, and the finger only presses buttons.
+  const [fingerDraws, setFingerDraws] = useState(false);
   const [maskOn, setMaskOn] = useState(false);
   const [threshold, setThreshold] = useState(DEFAULT_DARK_THRESHOLD);
   const [hover, setHover] = useState<Spot | null>(null);
@@ -700,6 +762,7 @@ export function CameraTest() {
     touchBelow: DEFAULT_TOUCH_BELOW,
     sendToBoard: true,
     smoothing: DEFAULT_SMOOTHING,
+    fingerDraws: false,
   });
   // The channel to the whiteboard window (src/lib/boardLink.ts), and when it was last heard from.
   const channelRef = useRef<BroadcastChannel | null>(null);
@@ -708,14 +771,28 @@ export function CameraTest() {
   const calibrationRef = useRef<SavedCalibration | null | undefined>(undefined);
   const calibrationJobRef = useRef<CalibrationJob | null>(null);
   const calibrationFailureRef = useRef<string | null>(null);
+  // What the whiteboard reports about the pointer, and the last click.
+  const boardPointerRef = useRef<{ over: string | null; touching: boolean; at: number } | null>(null);
+  const lastClickRef = useRef<{ label: string; at: number } | null>(null);
+  // The markers found in the last calibration (0 to 1 across the picture), circled on the picture for a while.
+  const calibrationFoundRef = useRef<{ points: Point[]; until: number } | null>(null);
+  // A picture of the marker writing that the whiteboard asked for, and when the last one ended.
+  const pictureJobRef = useRef<PictureJob | null>(null);
+  const pictureEndedRef = useRef(-Infinity);
+  // When the video loop last ran: the camera can take pictures only while it runs.
+  const lastTickRef = useRef(-Infinity);
   // The picture of the empty board that shadow is found against. It outlives camera restarts.
   const referenceRef = useRef<Reference | null>(null);
   // A snapshot that is counting down before it is saved.
   const snapshotRef = useRef<{ label: "touching" | "hovering"; startAt: number } | null>(null);
-  // A capture of the empty board that is counting down or collecting frames.
-  const captureRef = useRef<{ startAt: number; sum: Float32Array | null; count: number } | null>(
-    null,
-  );
+  // A capture of the empty board that is counting down or collecting frames. `auto` when the page
+  // started it by itself (no hand in view), so it can be dropped if a hand comes in.
+  const captureRef = useRef<{
+    startAt: number;
+    sum: Float32Array | null;
+    count: number;
+    auto?: boolean;
+  } | null>(null);
   const hoverRef = useRef<Spot | null>(null);
   const pinRef = useRef<Spot | null>(null);
   const metricsRef = useRef<Readout>({ ...EMPTY_READOUT });
@@ -866,17 +943,46 @@ export function CameraTest() {
   // Let go of the camera when leaving the page.
   useEffect(() => releaseCamera, [releaseCamera]);
 
-  // The link to the whiteboard window. It says every second that it is there, and how big it is.
+  // The link to the whiteboard window. It says every second that it is there, and how big it is,
+  // and asks for pictures of the marker writing. This page says every second whether it can take one.
   useEffect(() => {
     const channel = new BroadcastChannel(BOARD_CHANNEL);
     channelRef.current = channel;
     channel.onmessage = (event: MessageEvent<unknown>) => {
       const message = event.data;
-      if (isBoardMessage(message) && message.type === "alive") {
+      if (!isBoardMessage(message)) return;
+      if (message.type === "alive") {
         boardRef.current = { width: message.width, height: message.height, seen: performance.now() };
+      } else if (message.type === "finger-state") {
+        boardPointerRef.current = { over: message.over, touching: message.touching, at: performance.now() };
+      } else if (message.type === "finger-click") {
+        lastClickRef.current = { label: message.label, at: performance.now() };
+      } else if (message.type === "capture-request") {
+        // The video loop takes it from here.
+        pictureJobRef.current = {
+          id: message.id,
+          area: message.area,
+          phase: "wait",
+          started: performance.now(),
+          handFreeSince: null,
+          until: 0,
+          sum: null,
+          count: 0,
+        };
       }
     };
+
+    const announce = (ready: boolean) => {
+      const message: BoardMessage = { type: "camera", ready };
+      channel.postMessage(message);
+    };
+    const timer = window.setInterval(() => {
+      announce(performance.now() - lastTickRef.current < 1500 && Boolean(calibrationRef.current));
+    }, 1000);
+
     return () => {
+      window.clearInterval(timer);
+      announce(false);
       channelRef.current = null;
       channel.close();
     };
@@ -895,6 +1001,7 @@ export function CameraTest() {
       touchBelow,
       sendToBoard,
       smoothing,
+      fingerDraws,
     };
   }, [
     showHands,
@@ -908,11 +1015,23 @@ export function CameraTest() {
     touchBelow,
     sendToBoard,
     smoothing,
+    fingerDraws,
   ]);
 
   // Copy the numbers into state a few times a second (state per video frame would be wasteful).
   useEffect(() => {
-    const timer = window.setInterval(() => setReadout({ ...metricsRef.current }), 250);
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      const pointer = boardPointerRef.current;
+      const fresh = pointer !== null && now - pointer.at < 1500;
+      const click = lastClickRef.current;
+      setReadout({
+        ...metricsRef.current,
+        pointerOver: fresh ? pointer.over : null,
+        pointerTouching: fresh && pointer.touching,
+        lastClick: click ? `${click.label}, ${Math.round((now - click.at) / 1000)} s ago` : null,
+      });
+    }, 250);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -929,7 +1048,17 @@ export function CameraTest() {
     const maskCtx = mask.getContext("2d");
     const sample = document.createElement("canvas");
     const sampleCtx = sample.getContext("2d", { willReadFrequently: true });
-    if (!overlayCtx || !maskCtx || !sampleCtx) return;
+    // The full-size picture, for pictures of the marker writing (small writing needs every pixel).
+    const full = document.createElement("canvas");
+    const fullCtx = full.getContext("2d", { willReadFrequently: true });
+    if (!overlayCtx || !maskCtx || !sampleCtx || !fullCtx) return;
+
+    const post = (message: BoardMessage) => channelRef.current?.postMessage(message);
+    // For keeping the picture of the empty board up to date.
+    let previousLuma: Float32Array | null = null;
+    let stableFrames = 0;
+    let noHandSince: number | null = null;
+    let lastAutoReference = -Infinity;
 
     metricsRef.current = { ...EMPTY_READOUT };
     const trace = traceRef.current;
@@ -953,6 +1082,7 @@ export function CameraTest() {
       lastVideoTime = video.currentTime;
 
       const now = performance.now();
+      lastTickRef.current = now;
       const options = optionsRef.current;
       const metrics = metricsRef.current;
       const width = video.videoWidth;
@@ -964,6 +1094,18 @@ export function CameraTest() {
       }
       overlayCtx.clearRect(0, 0, width, height);
 
+      // The markers the last calibration found, circled for a while, to show what went wrong if it failed.
+      const foundMarkers = calibrationFoundRef.current;
+      if (foundMarkers && now < foundMarkers.until) {
+        overlayCtx.lineWidth = Math.max(3, width / 300);
+        overlayCtx.strokeStyle = "#22c55e";
+        for (const point of foundMarkers.points) {
+          overlayCtx.beginPath();
+          overlayCtx.arc(point.x * width, point.y * height, Math.max(12, width / 50), 0, Math.PI * 2);
+          overlayCtx.stroke();
+        }
+      }
+
       // The picture, shrunk, for measuring brightness and finding shadow.
       const sampleHeight = Math.max(1, Math.round((SAMPLE_WIDTH * height) / width));
       const sampleToPicture = width / SAMPLE_WIDTH;
@@ -974,6 +1116,19 @@ export function CameraTest() {
       sampleCtx.drawImage(video, 0, 0, SAMPLE_WIDTH, sampleHeight);
       const picture = sampleCtx.getImageData(0, 0, SAMPLE_WIDTH, sampleHeight);
       const luma = lumaOf(picture);
+
+      // How much the picture changed since the last frame (for telling when it is still).
+      let motion = Infinity;
+      if (previousLuma && previousLuma.length === luma.length) {
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < luma.length; i += 16) {
+          sum += Math.abs(luma[i] - previousLuma[i]);
+          count++;
+        }
+        motion = sum / count;
+      }
+      previousLuma = luma;
 
       // Taking the picture of the empty board: count down, then average a few frames.
       const capture = captureRef.current;
@@ -1010,8 +1165,8 @@ export function CameraTest() {
       // Calibration: find where the whiteboard is in the picture. Take a picture without the
       // whiteboard's markers, have it show them, take another, and compare.
       const job = calibrationJobRef.current;
-      const sendMarkers = (show: boolean) => {
-        const message: BoardMessage = { type: "markers", show };
+      const sendScreen = (screen: CalibrationScreen) => {
+        const message: BoardMessage = { type: "markers", screen };
         channelRef.current?.postMessage(message);
       };
       if (job) {
@@ -1036,13 +1191,14 @@ export function CameraTest() {
               job.before = average;
               job.phase = "show";
               job.until = now + CALIBRATION_SHOW_MS;
-              sendMarkers(true);
+              sendScreen("markers");
             } else {
-              sendMarkers(false);
+              sendScreen("off");
               calibrationJobRef.current = null;
               const result = job.before
                 ? calibrationFrom(job.before, average, SAMPLE_WIDTH, sampleHeight)
                 : null;
+              if (result) calibrationFoundRef.current = { points: result.found, until: now + CALIBRATION_SHOW_FOUND_MS };
               if (result?.ok) {
                 const saved: SavedCalibration = { ...result.calibration, savedAt: new Date().toISOString() };
                 calibrationRef.current = saved;
@@ -1109,6 +1265,104 @@ export function CameraTest() {
       }
       frameTimes.push(now);
       metrics.fps = framesPerSecond(frameTimes, now);
+
+      // A picture of the marker writing, asked for by the whiteboard (Solve, Graph, Check): wait for
+      // the hand to leave, have the whiteboard clear its drawing area, collect a few full-size frames,
+      // then straighten and clean them and send the result.
+      const pictureJob = pictureJobRef.current;
+      if (pictureJob) {
+        const finish = (message: BoardMessage) => {
+          post(message);
+          pictureJobRef.current = null;
+          pictureEndedRef.current = now;
+        };
+        if (pictureJob.phase === "wait") {
+          if (found.length === 0) {
+            pictureJob.handFreeSince ??= now;
+            if (now - pictureJob.handFreeSince >= HAND_FREE_MS) {
+              post({ type: "blank", id: pictureJob.id, on: true });
+              pictureJob.phase = "blank";
+              pictureJob.until = now + BLANK_SETTLE_MS;
+            }
+          } else {
+            pictureJob.handFreeSince = null;
+          }
+          if (pictureJob.phase === "wait" && now - pictureJob.started > PICTURE_TIMEOUT_MS) {
+            finish({
+              type: "capture-failed",
+              id: pictureJob.id,
+              reason: "Your hand is still in front of the camera. Take it away from the board and press the button again.",
+            });
+          }
+        } else if (pictureJob.phase === "blank") {
+          if (now >= pictureJob.until) {
+            pictureJob.phase = "grab";
+            pictureJob.sum = null;
+            pictureJob.count = 0;
+          }
+        } else {
+          if (full.width !== width || full.height !== height) {
+            full.width = width;
+            full.height = height;
+          }
+          fullCtx.drawImage(video, 0, 0, width, height);
+          const fullLuma = lumaOf(fullCtx.getImageData(0, 0, width, height));
+          if (!pictureJob.sum || pictureJob.sum.length !== fullLuma.length) {
+            pictureJob.sum = new Float32Array(fullLuma.length);
+            pictureJob.count = 0;
+          }
+          addFrame(pictureJob.sum, fullLuma);
+          pictureJob.count++;
+
+          if (pictureJob.count >= PICTURE_FRAMES) {
+            post({ type: "blank", id: pictureJob.id, on: false });
+            const calibrationNow = calibrationRef.current;
+            const windowToCamera = calibrationNow ? invertMatrix(calibrationNow.matrix) : null;
+            const boardNow = boardRef.current;
+            if (!windowToCamera || !boardNow) {
+              finish({
+                type: "capture-failed",
+                id: pictureJob.id,
+                reason: "The camera page is not calibrated. Press Calibrate on it first.",
+              });
+            } else {
+              const { area } = pictureJob;
+              const size = pictureSize(area.width * boardNow.width, area.height * boardNow.height);
+              const straight = straighten(
+                averageOf(pictureJob.sum, pictureJob.count),
+                width,
+                height,
+                windowToCamera,
+                area,
+                size.width,
+                size.height,
+              );
+              const writing = findWriting(straight, size.width, size.height);
+              finish({ type: "capture", id: pictureJob.id, image: grayToDataUrl(writing), scale: size.scale });
+            }
+          }
+        }
+      }
+
+      // Keep the picture of the empty board up to date: whenever no hand has been in view for a while
+      // and the picture is still, take a new one. New marker writing and changes on the projected
+      // board (a new answer card, a button that changed color) then do not look like shadow.
+      noHandSince = found.length === 0 ? (noHandSince ?? now) : null;
+      stableFrames = motion < MOTION_LIMIT ? stableFrames + 1 : 0;
+      if (captureRef.current?.auto && found.length > 0) captureRef.current = null; // a hand came in: start again later
+      if (
+        !captureRef.current &&
+        !pictureJobRef.current &&
+        !calibrationJobRef.current &&
+        now - pictureEndedRef.current > 1500 &&
+        noHandSince !== null &&
+        now - noHandSince >= NO_HAND_MS &&
+        stableFrames >= STABLE_FRAMES &&
+        now - lastAutoReference >= AUTO_REFERENCE_EVERY_MS
+      ) {
+        captureRef.current = { startAt: now, sum: null, count: 0, auto: true };
+        lastAutoReference = now;
+      }
 
       // Brightness of the board and of the shadow.
       metrics.meanLuma = meanLuminance(picture);
@@ -1188,6 +1442,7 @@ export function CameraTest() {
               ? { calibration, width: board.width, height: board.height }
               : null,
           smoothing: options.smoothing,
+          draw: options.fingerDraws,
         });
         metrics.writing = result.writing;
         if (result.message) channelRef.current?.postMessage(result.message);
@@ -1325,7 +1580,7 @@ export function CameraTest() {
       count: 0,
       before: null,
     };
-    const message: BoardMessage = { type: "markers", show: false };
+    const message: BoardMessage = { type: "markers", screen: "plain" };
     channelRef.current?.postMessage(message);
   };
 
@@ -1523,7 +1778,7 @@ export function CameraTest() {
           {camera.kind === "error" && <p className="text-sm text-red-700">{camera.message}</p>}
         </Section>
 
-        <Section title="Write on the whiteboard">
+        <Section title="Whiteboard">
           <dl className="flex flex-col gap-1.5">
             <Row
               label="Whiteboard window"
@@ -1539,6 +1794,15 @@ export function CameraTest() {
                     : "not calibrated"
               }
             />
+            <Row
+              label="Pointer on the whiteboard"
+              value={
+                readout.pointerOver
+                  ? `${readout.pointerOver}${readout.pointerTouching ? ", touching" : ""}`
+                  : "–"
+              }
+            />
+            <Row label="Last click" value={readout.lastClick ?? "–"} />
           </dl>
           <button
             type="button"
@@ -1562,6 +1826,11 @@ export function CameraTest() {
             </p>
           )}
           <Toggle label="Send the finger to the whiteboard" checked={sendToBoard} onChange={handleSendToBoard} />
+          <Toggle
+            label="The finger also draws on the board"
+            checked={fingerDraws}
+            onChange={setFingerDraws}
+          />
           <div className="flex items-center justify-between text-sm">
             <label htmlFor={smoothingId} className="font-medium">
               Pen smoothing
@@ -1582,13 +1851,20 @@ export function CameraTest() {
             Open the whiteboard (<code>/</code>) in a window on the projector, put this page on
             your screen, and keep both visible (a window that is covered or minimized stops
             working). Take your hand away, press Calibrate, and wait: the whiteboard shows nine
-            black squares and this page finds them. Also capture the empty board (Shadow touch,
-            below). Then point with one finger, and touch the board to write: the writing pose
-            (only the index finger out) and touching are both needed. A bright ring on the board
-            shows where the fingertip is. Touch a button and lift to press it, or touch a slider
-            and slide. A lower smoothing number holds the pen steadier but makes it lag. The
-            default pen is white, because black ink is as dark as a shadow and would be taken for
-            one.
+            black squares and this page finds them.
+          </p>
+          <p className="text-sm text-neutral-500">
+            Write on the board with a marker. When you press Solve, Graph or Check on the
+            whiteboard, it asks this page for a picture: take your hand away from the board, the
+            drawing area goes plain for half a second, and the camera reads the marker writing.
+            Writing with the mouse still counts too.
+          </p>
+          <p className="text-sm text-neutral-500">
+            Press buttons with one finger (only the index finger out): touch the button and lift.
+            Sliders follow the finger while it touches them. The picture of the empty board that
+            touch is judged against updates by itself whenever no hand has been in view for a
+            moment. Drawing with the finger is off by default; turn it on above. A lower smoothing
+            number holds the finger steadier but makes it lag.
           </p>
         </Section>
 

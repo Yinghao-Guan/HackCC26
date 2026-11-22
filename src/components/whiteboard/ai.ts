@@ -9,6 +9,8 @@ export type AiAction = "solve" | "graph" | "check";
 export type AiStatus =
   | { state: "idle" }
   | { state: "loading"; action: AiAction }
+  /** Waiting for the camera page's picture of the marker writing. */
+  | { state: "capturing"; action: AiAction }
   | { state: "message"; tone: "info" | "error"; text: string };
 
 const REQUEST_TIMEOUT_MS = 90_000;

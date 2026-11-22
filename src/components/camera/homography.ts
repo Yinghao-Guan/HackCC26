@@ -75,6 +75,24 @@ export function applyHomography(h: Matrix, p: Point): Point {
   };
 }
 
+/** The homography that undoes this one, or null if it cannot be undone. */
+export function invertMatrix(h: Matrix): Matrix | null {
+  const [a, b, c, d, e, f, g, i, k] = h;
+  const det = a * (e * k - f * i) - b * (d * k - f * g) + c * (d * i - e * g);
+  if (Math.abs(det) < 1e-12) return null;
+  return [
+    (e * k - f * i) / det,
+    (c * i - b * k) / det,
+    (b * f - c * e) / det,
+    (f * g - d * k) / det,
+    (a * k - c * g) / det,
+    (c * d - a * f) / det,
+    (d * i - e * g) / det,
+    (b * g - a * i) / det,
+    (a * e - b * d) / det,
+  ];
+}
+
 /** How far, on average (root mean square), the homography lands from where the points should go. */
 export function rmsError(h: Matrix, from: Point[], to: Point[]): number {
   let sum = 0;

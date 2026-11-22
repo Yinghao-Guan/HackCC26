@@ -23,6 +23,8 @@ interface SettingsPanelProps {
   canClear: boolean;
   canResetView: boolean;
   ai: AiStatus;
+  /** Is the camera page ready to read the marker writing on the board? */
+  cameraReady: boolean;
   onSolve: () => void;
   onGraph: () => void;
   onCheck: () => void;
@@ -80,6 +82,7 @@ export function SettingsPanel({
   canClear,
   canResetView,
   ai,
+  cameraReady,
   onSolve,
   onGraph,
   onCheck,
@@ -87,6 +90,10 @@ export function SettingsPanel({
   onClear,
   onResetView,
 }: SettingsPanelProps) {
+  // While the board is being read (a picture taken, or the AI asked), the AI buttons wait.
+  const busy = ai.state === "loading" || ai.state === "capturing";
+  const busyWith = (action: "solve" | "graph" | "check") =>
+    (ai.state === "loading" || ai.state === "capturing") && ai.action === action;
   const sizeId = useId();
   const brightnessId = useId();
   const { tool, eraserMode, color, boardBrightness } = settings;
@@ -113,26 +120,26 @@ export function SettingsPanel({
           <button
             type="button"
             onClick={onSolve}
-            disabled={ai.state === "loading"}
+            disabled={busy}
             className="h-14 rounded-lg bg-emerald-600 text-lg font-semibold text-white transition-colors hover:bg-emerald-700 disabled:pointer-events-none disabled:opacity-60"
           >
-            {ai.state === "loading" && ai.action === "solve" ? "Reading…" : "Solve"}
+            {busyWith("solve") ? "Reading…" : "Solve"}
           </button>
           <button
             type="button"
             onClick={onGraph}
-            disabled={ai.state === "loading"}
+            disabled={busy}
             className="h-14 rounded-lg bg-blue-600 text-lg font-semibold text-white transition-colors hover:bg-blue-700 disabled:pointer-events-none disabled:opacity-60"
           >
-            {ai.state === "loading" && ai.action === "graph" ? "Drawing…" : "Graph"}
+            {busyWith("graph") ? "Drawing…" : "Graph"}
           </button>
           <button
             type="button"
             onClick={onCheck}
-            disabled={ai.state === "loading"}
+            disabled={busy}
             className="h-14 rounded-lg bg-violet-600 text-lg font-semibold text-white transition-colors hover:bg-violet-700 disabled:pointer-events-none disabled:opacity-60"
           >
-            {ai.state === "loading" && ai.action === "check" ? "Checking…" : "Check"}
+            {busyWith("check") ? "Checking…" : "Check"}
           </button>
         </div>
         <p
@@ -141,7 +148,9 @@ export function SettingsPanel({
             ai.state === "message" && ai.tone === "error" ? "text-red-700" : "text-neutral-500"
           }`}
         >
-          {ai.state === "loading"
+          {ai.state === "capturing"
+            ? "Taking a picture of the board. Take your hand away from it."
+            : ai.state === "loading"
             ? ai.action === "graph"
               ? "Reading your equations and drawing the graph. This can take a few seconds."
               : ai.action === "check"
@@ -149,7 +158,9 @@ export function SettingsPanel({
                 : "Reading your handwriting and solving it. This can take a few seconds."
             : ai.state === "message"
               ? ai.text
-              : "Solve works out the answer. Graph draws equations in 2D or 3D (typed ones instantly). Check finds the first mistake in your steps."}
+              : cameraReady
+                ? "Write with a marker, then press a button: the camera reads the board. Solve works out the answer, Graph draws the equations, Check finds the first mistake in your steps."
+                : "Solve works out the answer. Graph draws equations in 2D or 3D (typed ones instantly). Check finds the first mistake in your steps."}
         </p>
       </PanelSection>
 

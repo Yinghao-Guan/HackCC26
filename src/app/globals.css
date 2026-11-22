@@ -27,13 +27,12 @@ body {
   overscroll-behavior: none;
 }
 
-/* A finger seen by the camera hovering over, or pressing, a button (see fingerUi.ts). */
-[data-finger="hover"] {
-  outline: 4px solid #0ea5e9;
-  outline-offset: 3px;
-}
-[data-finger="pressed"] {
+/*
+  A button the finger seen by the camera has just clicked (see fingerUi.ts). Buttons do
+  not change while the finger hovers or presses: anything that turns darker under the
+  finger would look like its shadow to the touch detection.
+*/
+[data-finger="clicked"] {
   outline: 4px solid #16a34a;
   outline-offset: 3px;
-  filter: brightness(0.9);
 }

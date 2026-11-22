@@ -26,6 +26,8 @@ export interface PenFrame {
   target: { calibration: Calibration; width: number; height: number } | null;
   /** How steady to hold the pen, as the filter's cutoff in Hz: lower is steadier but lags more. */
   smoothing: number;
+  /** May a touch on the board itself draw? Otherwise the finger only presses buttons and drags sliders. */
+  draw: boolean;
 }
 
 export class Pen {
@@ -51,7 +53,7 @@ export class Pen {
     this.sending = true;
     return {
       writing,
-      message: { type: "pointer", x: smooth.x / width, y: smooth.y / height, writing },
+      message: { type: "pointer", x: smooth.x / width, y: smooth.y / height, writing, draw: frame.draw },
     };
   }
 

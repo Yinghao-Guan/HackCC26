@@ -8,14 +8,20 @@ import {
   useState,
   type WheelEvent,
 } from "react";
-import { BOARD_CHANNEL, isBoardMessage, type BoardMessage } from "@/lib/boardLink";
+import {
+  BOARD_CHANNEL,
+  isBoardMessage,
+  type BoardMessage,
+  type CalibrationScreen,
+  type ShareRect,
+} from "@/lib/boardLink";
 import { requestCheck, requestGraph, requestSolve, type AiAction, type AiStatus } from "./ai";
 import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
 import { CalibrationMarkers } from "./CalibrationMarkers";
 import { CheckCard } from "./CheckCard";
 import { DrawingCanvas, type DrawingCanvasHandle } from "./DrawingCanvas";
-import { exportInk } from "./exportInk";
+import { exportBoardPicture, exportInk, type InkImage } from "./exportInk";
 import { FingerUi } from "./fingerUi";
 import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
@@ -43,8 +49,16 @@ export function Whiteboard() {
   const [view, setView] = useState<Point>(ORIGIN);
   const boardRef = useRef<HTMLElement>(null);
   const canvasHandleRef = useRef<DrawingCanvasHandle>(null);
-  // The calibration markers are shown while the camera page works out where this window is.
-  const [showMarkers, setShowMarkers] = useState(false);
+  // The calibration screen is shown while the camera page works out where this window is.
+  const [calibrationScreen, setCalibrationScreen] = useState<CalibrationScreen>("off");
+  // A ring that shows where the camera sees the pointer (finger or pen), anywhere in the window.
+  const ringRef = useRef<HTMLDivElement>(null);
+  // Whether the camera page can read the marker writing on the board, and a way to ask it to.
+  const [cameraReady, setCameraReady] = useState(false);
+  const cameraReadyRef = useRef(false);
+  const requestPictureRef = useRef<((area: ShareRect) => Promise<{ image: string; scale: number }>) | null>(null);
+  // The drawing area goes plain for a moment while the camera takes its picture, so it sees only real writing.
+  const [blank, setBlank] = useState(false);
 
   // The text box being edited lives in state (so it renders) and in a ref (so
   // events that arrive out of order always see the latest value).
@@ -194,7 +208,41 @@ export function Whiteboard() {
         }
       }
 
-      const ink = exportInk(board.strokes, viewport, { numberLines: action === "check" });
+      // What to read: when the camera page is ready, the marker writing on the board (with any marks
+      // made with the mouse on top); otherwise the marks made on the board.
+      let ink: InkImage | null;
+      const requestPicture = requestPictureRef.current;
+      if (cameraReadyRef.current && requestPicture && rect) {
+        setAi({ state: "capturing", action });
+        try {
+          const shot = await requestPicture({
+            x: rect.left / window.innerWidth,
+            y: rect.top / window.innerHeight,
+            width: rect.width / window.innerWidth,
+            height: rect.height / window.innerHeight,
+          });
+          ink = await exportBoardPicture(shot.image, shot.scale, board.strokes, viewport, {
+            numberLines: action === "check",
+          });
+        } catch (error) {
+          setAi({
+            state: "message",
+            tone: "error",
+            text: error instanceof Error ? error.message : "The camera could not take a picture of the board.",
+          });
+          return;
+        }
+        if (!ink) {
+          setAi({
+            state: "message",
+            tone: "info",
+            text: "I couldn't see any writing on the board. Write a little larger and darker, inside the drawing area, and keep your hand away while the picture is taken.",
+          });
+          return;
+        }
+      } else {
+        ink = exportInk(board.strokes, viewport, { numberLines: action === "check" });
+      }
       if (!ink) {
         const somethingElsewhere = board.strokes.some((s) => s.tool !== "eraser");
         const nothingYet = {
@@ -292,25 +340,93 @@ export function Whiteboard() {
   useEffect(() => {
     const channel = new BroadcastChannel(BOARD_CHANNEL);
     const finger = new FingerUi();
+    // What the pointer is over is reported back to the camera page, at most a few times a second.
+    let lastReport = { over: null as string | null, touching: false, at: -Infinity };
     const target = {
       get canvas() {
         return canvasHandleRef.current?.canvas() ?? null;
       },
       draw: (point: Point | null, down: boolean) => canvasHandleRef.current?.finger(point, down),
+      ring: (point: Point | null, touching: boolean) => {
+        const ring = ringRef.current;
+        if (!ring) return;
+        if (!point) {
+          ring.style.visibility = "hidden";
+          return;
+        }
+        ring.style.transform = `translate(${point.x}px, ${point.y}px) translate(-50%, -50%)`;
+        ring.style.visibility = "visible";
+        ring.dataset.touching = touching ? "true" : "false";
+      },
+      report: (over: string | null, touching: boolean) => {
+        const now = performance.now();
+        if (over === lastReport.over && touching === lastReport.touching && now - lastReport.at < 500) return;
+        lastReport = { over, touching, at: now };
+        const message: BoardMessage = { type: "finger-state", over, touching };
+        channel.postMessage(message);
+      },
+      clicked: (label: string) => {
+        const message: BoardMessage = { type: "finger-click", label };
+        channel.postMessage(message);
+      },
     };
 
-    // If the camera page goes away while the markers are up, they must not stay up for good.
+    // If the camera page goes away during calibration, the calibration screen must not stay up for good.
     let markersTimer = 0;
+
+    // Pictures of the marker writing asked of the camera page, by request number.
+    const pending = new Map<
+      number,
+      { resolve: (shot: { image: string; scale: number }) => void; reject: (error: Error) => void; timer: number }
+    >();
+    let nextId = 1;
+    let cameraSeen = -Infinity;
+    const setReady = (ready: boolean) => {
+      cameraReadyRef.current = ready;
+      setCameraReady(ready);
+    };
+    requestPictureRef.current = (area) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++;
+        const timer = window.setTimeout(() => {
+          pending.delete(id);
+          setBlank(false);
+          reject(new Error("The camera page did not send a picture. Is it open, with the camera on and calibrated?"));
+        }, 12_000);
+        pending.set(id, { resolve, reject, timer });
+        const request: BoardMessage = { type: "capture-request", id, area };
+        channel.postMessage(request);
+      });
+
     channel.onmessage = (event: MessageEvent<unknown>) => {
       const message = event.data;
       if (!isBoardMessage(message)) return;
 
-      if (message.type === "markers") {
+      if (message.type === "camera") {
+        cameraSeen = performance.now();
+        if (message.ready !== cameraReadyRef.current) setReady(message.ready);
+      } else if (message.type === "blank") {
+        if (pending.has(message.id)) setBlank(message.on);
+      } else if (message.type === "capture" || message.type === "capture-failed") {
+        const waiting = pending.get(message.id);
+        if (!waiting) return;
+        pending.delete(message.id);
+        window.clearTimeout(waiting.timer);
+        setBlank(false);
+        if (message.type === "capture") waiting.resolve({ image: message.image, scale: message.scale });
+        else waiting.reject(new Error(message.reason));
+      } else if (message.type === "markers") {
         window.clearTimeout(markersTimer);
-        setShowMarkers(message.show);
-        if (message.show) markersTimer = window.setTimeout(() => setShowMarkers(false), 15_000);
+        setCalibrationScreen(message.screen);
+        if (message.screen !== "off") markersTimer = window.setTimeout(() => setCalibrationScreen("off"), 20_000);
       } else if (message.type === "pointer") {
-        finger.update(message.x * window.innerWidth, message.y * window.innerHeight, message.writing, target);
+        finger.update(
+          message.x * window.innerWidth,
+          message.y * window.innerHeight,
+          message.writing,
+          message.draw,
+          target,
+        );
       } else if (message.type === "pointer-lost") {
         finger.lost(target);
       }
@@ -322,7 +438,11 @@ export function Whiteboard() {
       channel.postMessage(alive);
     };
     announce();
-    const timer = window.setInterval(announce, 1000);
+    const timer = window.setInterval(() => {
+      announce();
+      // The camera page says every second whether it is ready; silence means it is gone.
+      if (cameraReadyRef.current && performance.now() - cameraSeen > 2500) setReady(false);
+    }, 1000);
     window.addEventListener("resize", announce);
 
     return () => {
@@ -330,6 +450,12 @@ export function Whiteboard() {
       window.clearTimeout(markersTimer);
       window.removeEventListener("resize", announce);
       finger.lost(target);
+      requestPictureRef.current = null;
+      for (const waiting of pending.values()) {
+        window.clearTimeout(waiting.timer);
+        waiting.reject(new Error("The whiteboard was closed."));
+      }
+      pending.clear();
       channel.close();
     };
   }, []);
@@ -352,7 +478,15 @@ export function Whiteboard() {
     <div className="flex h-dvh w-full overflow-hidden">
       <h1 className="sr-only">HackCC26 whiteboard</h1>
 
-      {showMarkers && <CalibrationMarkers />}
+      {calibrationScreen !== "off" && <CalibrationMarkers screen={calibrationScreen} />}
+
+      {/* Where the camera sees the pointer: a light ring (filled while touching), light so it is never taken for a shadow. */}
+      <div
+        ref={ringRef}
+        aria-hidden="true"
+        className="pointer-events-none fixed left-0 top-0 z-40 size-8 rounded-full border-[3px] border-amber-300 data-[touching=true]:bg-amber-200/70"
+        style={{ visibility: "hidden" }}
+      />
 
       <main
         ref={boardRef}
@@ -417,6 +551,15 @@ export function Whiteboard() {
             }
           })}
         </div>
+
+        {/* Plain board color over everything while the camera takes its picture of the marker writing. */}
+        {blank && (
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 z-40"
+            style={{ backgroundColor: boardColor(settings.boardBrightness) }}
+          />
+        )}
       </main>
 
       <SettingsPanel
@@ -426,6 +569,7 @@ export function Whiteboard() {
         canClear={board.strokes.length > 0 || board.cards.length > 0}
         canResetView={view.x !== 0 || view.y !== 0}
         ai={ai}
+        cameraReady={cameraReady}
         onSolve={solve}
         onGraph={graph}
         onCheck={check}
