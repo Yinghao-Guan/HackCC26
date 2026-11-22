@@ -40,8 +40,9 @@ from .events import (
     parse_client_message,
 )
 from .fake import run_fake_pointer
-from .handlers import ServerState, handle_message
+from .handlers import handle_message
 from .preview import annotate, encode_jpeg
+from .state import ServerState
 
 log = logging.getLogger(__name__)
 
@@ -131,10 +132,11 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
             yield
         finally:
             state.shutting_down = True
-            if fake_task is not None:
-                fake_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await fake_task
+            for task in (fake_task, state.auto_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
             if state.camera is not None:
                 await asyncio.to_thread(state.camera.stop)
 
