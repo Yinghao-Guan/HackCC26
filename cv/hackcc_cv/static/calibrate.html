@@ -16,6 +16,9 @@
   p { margin: 4px 0; }
   .muted { color: var(--muted); }
   .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; }
+  /* ArUco calibration pattern: pure white page, crisp black-and-white markers. */
+  #pattern { position: fixed; inset: 0; background: #ffffff; display: none; z-index: 50; }
+  #pattern img { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
   button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px;
     background: #f9fafb; color: var(--ink); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -46,6 +49,7 @@
 </head>
 <body>
 <div id="board" aria-hidden="true"></div>
+<div id="pattern" aria-hidden="true"></div>
 <main>
   <h1>Board calibration</h1>
   <p class="muted">Maps the camera image to the board page so a finger on the board lands in the right place.</p>
@@ -53,7 +57,8 @@
   <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting…</span></div>
 
   <div class="bar">
-    <button id="start" class="primary" type="button">1. Show targets on the board</button>
+    <button id="auto" class="primary" type="button">Auto calibrate (markers)</button>
+    <button id="start" type="button">Manual: show targets</button>
     <button id="undo" type="button" disabled>Undo last click</button>
     <button id="cancel" type="button">Cancel</button>
     <label><input id="check" type="checkbox"> Check mode: click to show a red cross on the board</label>
@@ -62,7 +67,7 @@
     <label><input id="isBoard" type="checkbox"> This screen is the projector (one mirrored screen)</label>
   </div>
 
-  <p id="hint">Press "Show targets", then click the centre of each target in the camera image below, in order 1 → 4.</p>
+  <p id="hint">Press "Auto calibrate" (the board shows a grid of markers for a few seconds), or calibrate by hand with "Manual: show targets".</p>
   <div id="stage">
     <img id="preview" alt="Live camera image">
     <canvas id="marks"></canvas>
@@ -121,7 +126,7 @@
   function updateHint() {
     $("undo").disabled = clicks.length === 0;
     if ($("check").checked) { $("hint").textContent = "Check mode: click anywhere on the board in the camera image; a red cross should appear there on the board."; return; }
-    if (!targetsShown) { $("hint").textContent = 'Press "Show targets", then click the centre of each target in order 1 → 4.'; return; }
+    if (!targetsShown) { $("hint").textContent = 'Press "Auto calibrate", or "Manual: show targets" and click the centre of each target in order 1 → 4.'; return; }
     $("hint").textContent = clicks.length < 4
       ? `Click the centre of target ${clicks.length + 1} (${NAMES[clicks.length]}).`
       : "Calibrating…";
@@ -138,6 +143,7 @@
     if (clicks.length === 4) send({ type: "calibrate_manual", camera_points: clicks, camera_size: [w, h] });
   });
 
+  $("auto").onclick = () => { clicks = []; $("check").checked = false; drawMarks(); send({ type: "calibrate_auto" }); };
   $("start").onclick = () => { clicks = []; $("check").checked = false; drawMarks(); send({ type: "calibrate_manual_start" }); };
   $("cancel").onclick = () => { clicks = []; drawMarks(); send({ type: "calibrate_cancel" }); };
   $("undo").onclick = () => { clicks.pop(); drawMarks(); updateHint(); };
@@ -153,6 +159,25 @@
       el.innerHTML = `<span>${t.id}</span>`;
       $("board").appendChild(el);
     }
+  }
+
+  // Draw the ArUco grid the server sent, then tell it the pattern is really on screen.
+  function showPattern(markers, confirm, run) {
+    const layer = $("pattern");
+    layer.replaceChildren();
+    if (!markers.length) { layer.style.display = "none"; return; }
+    const loads = markers.map((m) => new Promise((resolve) => {
+      const img = new Image();
+      img.alt = ""; img.onload = () => resolve(true); img.onerror = () => resolve(false);
+      img.src = m.png;
+      Object.assign(img.style, { left: `${m.x}px`, top: `${m.y}px`, width: `${m.size}px`, height: `${m.size}px` });
+      layer.appendChild(img);
+    }));
+    layer.style.display = "block";
+    if (!confirm) return;
+    // Confirm only when every marker really loaded, echoing the run number.
+    Promise.all(loads).then((ok) => { if (ok.every(Boolean)) requestAnimationFrame(() => requestAnimationFrame(
+      () => send({ type: "calibration_pattern_shown", run }))); });
   }
 
   function showProbe(e) {
@@ -182,6 +207,8 @@
         showTargets(e.targets);
         break;
       case "calibration_probe": showProbe(e); break;
+      // Only draw (and confirm) the pattern when this screen is the projector.
+      case "calibration_pattern": showPattern($("isBoard").checked ? e.markers : [], true, e.run); break;
       case "camera":
         $("camInfo").textContent = e.status === "ok" ? `Camera ${e.index}: ${e.width}×${e.height}` : `Camera ${e.status}: ${e.message}`;
         if (e.status === "ok" && !$("preview").src) $("preview").src = "/preview.mjpg";
