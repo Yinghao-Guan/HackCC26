@@ -44,6 +44,11 @@ class ServerState:
         self.auto_task: asyncio.Task[None] | None = None
         self.pattern_shown = asyncio.Event()
         self.pattern_run = 0  # numbers each showing of the pattern
+        # Reading the board: the running task, the white flash's confirmation, the result.
+        self.read_task: asyncio.Task[None] | None = None
+        self.flash_shown = asyncio.Event()
+        self.flash_run = 0
+        self.content_regions: list[dict[str, Any]] = []
         self.calibration_lock = asyncio.Lock()  # one calibration at a time
         self.last_calibration_key: tuple[str, str] | None = None
         self.shutting_down = False
@@ -88,8 +93,8 @@ class ServerState:
             await self.bus.broadcast(event)
 
     def calibration_running(self) -> bool:
-        return self.calibration_lock.locked() or (
-            self.auto_task is not None and not self.auto_task.done()
+        return self.calibration_lock.locked() or any(
+            task is not None and not task.done() for task in (self.auto_task, self.read_task)
         )
 
     # -- manual targets -------------------------------------------------------
