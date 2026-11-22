@@ -18,10 +18,16 @@ from .calibration import (
 )
 from .camera import Camera
 from .config import Config
+from .drift import MIN_MARKERS
 from .events import DEFAULT_DISPLAY, Display, calibration_targets_event
 from .tracking import TrackingLoop
 
 log = logging.getLogger(__name__)
+
+NO_PRINTED_MARKERS = (
+    "Calibrated, but fewer than 2 printed markers were seen, so camera moves will not be "
+    "noticed. Stick printed markers (/markers) around the board and calibrate again."
+)
 
 
 class ServerState:
@@ -37,6 +43,8 @@ class ServerState:
         self.calibration = CalibrationStore()
         self.calibration_problem = ""  # set when the saved calibration could not be loaded
         self.save_problem = ""  # set when the calibration in use could not be saved
+        self.drift_problem = ""  # set while the printed markers say the camera moved
+        self.drift_task: asyncio.Task[None] | None = None
         # Manual calibration: the targets on show, and the board size they were placed for.
         self.targets: list[tuple[float, float]] | None = None
         self.targets_display: Display | None = None
@@ -69,11 +77,15 @@ class ServerState:
             if self.calibration_problem:
                 return calibration_status_event("error", message=self.calibration_problem)
             return calibration_status_event("none", message="Not calibrated yet.")
+        if self.drift_problem:
+            return calibration_status_event("stale", current, self.drift_problem)
         reason = stale_reason(current, self.display, self.camera_size())
         if reason is not None:
             return calibration_status_event("stale", current, reason)
         if self.save_problem:
             return calibration_status_event("ok", current, self.save_problem)
+        if len(current.static()) < MIN_MARKERS:
+            return calibration_status_event("ok", current, NO_PRINTED_MARKERS)
         return calibration_status_event("ok", current)
 
     def remember_announced(self, event: dict[str, Any]) -> None:
@@ -130,6 +142,7 @@ class ServerState:
             )
         self.calibration.set(calibration)
         self.calibration_problem = ""
+        self.drift_problem = ""  # a fresh calibration fits wherever the camera is now
         self.hide_targets()
         await self.announce_calibration(force=True)
         await self.bus.broadcast(calibration_targets_event([]))
