@@ -95,6 +95,37 @@ def test_two_saves_in_the_same_second_keep_both_history_copies(tmp_path):
     assert len(list((tmp_path / "history").glob("*.json"))) == 3
 
 
+def test_printed_marker_positions_are_saved_with_the_calibration(tmp_path):
+    statics = ((40, 60.0, 60.0, 70.0), (41, 1200.0, 60.0, 70.0))
+    calibration = make_calibration(static_markers=statics)
+    save_calibration(calibration, tmp_path)
+    loaded = load_calibration(tmp_path)
+    assert loaded == calibration
+    assert [m.id for m in loaded.static()] == [40, 41]
+
+
+def test_older_calibration_files_without_printed_markers_still_load():
+    data = json.loads(make_calibration().to_json())
+    data.pop("static_markers", None)
+    assert Calibration.from_json(json.dumps(data)).static_markers == ()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [[40, 1, 2]], [[40, "x", 2, 3]], [[7, 1, 2, 3]], [[40, float("nan"), 2, 3]], "nope",
+        [[40, 10, 10, 0]],  # no size
+        [[40, 10, 10, 30], [40, 20, 20, 30]],  # the same marker twice
+        [[40, 5000, 10, 30]],  # outside the 1280 x 720 camera image
+    ],
+)
+def test_bad_printed_marker_entries_are_rejected(bad):
+    data = json.loads(make_calibration().to_json())
+    data["static_markers"] = bad
+    with pytest.raises(CalibrationError):
+        Calibration.from_json(json.dumps(data))
+
+
 def test_garbage_is_rejected():
     with pytest.raises(CalibrationError):
         Calibration.from_json("{not json")
