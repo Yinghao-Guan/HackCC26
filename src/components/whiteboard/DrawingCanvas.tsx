@@ -21,15 +21,24 @@ import {
 } from "./strokes";
 
 /**
- * Touches that don't come from the browser, such as a finger the camera service sees on the
- * board. Points are in CSS pixels relative to the canvas, like a mouse event's.
+ * Touches that don't come from the browser. Points are in CSS pixels relative to the
+ * canvas, like a mouse event's. There are two sources: the camera service's event bus
+ * (`touchStart`, `touchMove`, `touchEnd`, see useBusInput.ts) and the camera page in this
+ * browser (`finger`, see fingerUi.ts).
  */
 export interface DrawingCanvasHandle {
   /** The canvas, to tell whether a point on the screen is over the board. */
   element(): HTMLCanvasElement | null;
+  /** The same canvas, under the name the camera page's code uses. */
+  canvas(): HTMLCanvasElement | null;
   touchStart(id: number, at: Point): void;
   touchMove(id: number, at: Point): void;
   touchEnd(id: number): void;
+  /**
+   * A finger seen by the camera page: where its tip is on the canvas, or null if it is
+   * gone, and whether it is touching the board.
+   */
+  finger(point: Point | null, down: boolean): void;
 }
 
 interface DrawingCanvasProps {
@@ -60,8 +69,10 @@ type Gesture =
   | { kind: "erase"; pointerId: number; last: Point; erased: Set<number> }
   | { kind: "pan"; pointerId: number; lastX: number; lastY: number };
 
-// Browser pointer ids are never negative, so touches from outside use negative ids.
-const outsideId = (id: number) => -1 - id;
+// Browser pointer ids are never negative, so touches from outside use negative ids:
+// -1 for the camera page's finger, and -1000 and below for the camera service's.
+const FINGER = -1;
+const outsideId = (id: number) => -1000 - id;
 
 /** Where a pointer event is on the screen, relative to the canvas. */
 function screenPoint(
@@ -245,9 +256,30 @@ export function DrawingCanvas({
     return gesture;
   };
 
+  /**
+   * A finger seen by the camera page, as a pen: `point` is where its tip is on the canvas,
+   * or null if it is gone, and `down` is whether it is touching the board. It draws and
+   * erases like the mouse does. (The board shows where it is: see Whiteboard.tsx.)
+   */
+  const finger = (point: Point | null, down: boolean) => {
+    if (!point) {
+      endGesture(FINGER);
+      hideEraserCursor();
+      return;
+    }
+    if (tool === "eraser") moveEraserCursor(point);
+
+    const ours = gestureRef.current?.pointerId === FINGER;
+    if (down && !ours && !gestureRef.current && (tool === "pen" || tool === "eraser")) beginMark(FINGER, point);
+    else if (down && ours && gestureRef.current) continueMark(gestureRef.current, [point]);
+    else if (!down && ours) endGesture(FINGER);
+  };
+
   // Touches from outside the browser go through the same drawing and erasing as the mouse.
   useImperativeHandle(ref, () => ({
     element: () => canvasRef.current,
+    canvas: () => canvasRef.current,
+    finger,
     touchStart: (id, at) => {
       if (gestureRef.current) return; // one gesture at a time
       if (tool !== "pen" && tool !== "eraser") return;

@@ -10,6 +10,8 @@ export type AiAction = "solve" | "graph" | "check";
 export type AiStatus =
   | { state: "idle" }
   | { state: "loading"; action: AiAction | "ask" }
+  /** Waiting for the camera page's picture of the marker writing. */
+  | { state: "capturing"; action: AiAction }
   | { state: "message"; tone: "info" | "error"; text: string };
 
 /** What the panel shows under the mic button. `heard` is what has been made out of the speech so far. */

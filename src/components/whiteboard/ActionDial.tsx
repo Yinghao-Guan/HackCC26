@@ -85,6 +85,9 @@ function aiMessage(ai: AiStatus): { text: string; tone: "info" | "error" } | nul
     }[ai.action];
     return { text, tone: "info" };
   }
+  if (ai.state === "capturing") {
+    return { text: "Taking a picture of the board. Take your hand away from it.", tone: "info" };
+  }
   if (ai.state === "message") return { text: ai.text, tone: ai.tone };
   return null;
 }
@@ -133,7 +136,9 @@ function arcOffset(index: number, count: number): { x: number; y: number } {
 export function ActionDial({ ai, voice, onSolve, onGraph, onCheck, onVoiceToggle }: ActionDialProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
-  const busy = ai.state === "loading";
+  // While the board is being read (a picture taken, or the AI asked), the AI buttons wait.
+  const busy = ai.state === "loading" || ai.state === "capturing";
+  const busyWith = (action: AiAction) => (ai.state === "loading" || ai.state === "capturing") && ai.action === action;
   const listening = voice.state === "listening";
 
   // Close on Escape, and on a click or tap outside the dial.
@@ -166,7 +171,7 @@ export function ActionDial({ ai, voice, onSolve, onGraph, onCheck, onVoiceToggle
     {
       id: "solve",
       label: "Solve",
-      icon: ai.state === "loading" && ai.action === "solve" ? <Spinner /> : <SolveIcon />,
+      icon: busyWith("solve") ? <Spinner /> : <SolveIcon />,
       onClick: onSolve,
       tone: "bg-emerald-600 hover:bg-emerald-700",
       disabled: busy,
@@ -174,7 +179,7 @@ export function ActionDial({ ai, voice, onSolve, onGraph, onCheck, onVoiceToggle
     {
       id: "graph",
       label: "Graph",
-      icon: ai.state === "loading" && ai.action === "graph" ? <Spinner /> : <GraphIcon />,
+      icon: busyWith("graph") ? <Spinner /> : <GraphIcon />,
       onClick: onGraph,
       tone: "bg-blue-600 hover:bg-blue-700",
       disabled: busy,
@@ -182,7 +187,7 @@ export function ActionDial({ ai, voice, onSolve, onGraph, onCheck, onVoiceToggle
     {
       id: "check",
       label: "Check",
-      icon: ai.state === "loading" && ai.action === "check" ? <Spinner /> : <CheckIcon />,
+      icon: busyWith("check") ? <Spinner /> : <CheckIcon />,
       onClick: onCheck,
       tone: "bg-violet-600 hover:bg-violet-700",
       disabled: busy,

@@ -8,6 +8,13 @@ import {
   useState,
   type WheelEvent,
 } from "react";
+import {
+  BOARD_CHANNEL,
+  isBoardMessage,
+  type BoardMessage,
+  type CalibrationScreen,
+  type ShareRect,
+} from "@/lib/boardLink";
 import { parseSpoken, type VoiceCommand } from "@/lib/voice";
 import { ActionDial } from "./ActionDial";
 import {
@@ -23,11 +30,13 @@ import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
 import { BusFeedback, type BusFeedbackHandle } from "./BusFeedback";
 import { CalibrationLayer, type Probe } from "./CalibrationLayer";
+import { CalibrationMarkers } from "./CalibrationMarkers";
 import { CheckCard } from "./CheckCard";
 import { useCvBus, type BusEvent, type Marker, type Target } from "./cvBus";
 import { CvStatus } from "./CvStatus";
 import { DrawingCanvas, type DrawingCanvasHandle } from "./DrawingCanvas";
-import { exportInk } from "./exportInk";
+import { exportBoardPicture, exportInk, type InkImage } from "./exportInk";
+import { FingerUi } from "./fingerUi";
 import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
@@ -78,6 +87,13 @@ export function Whiteboard() {
   const [targets, setTargets] = useState<Target[]>([]);
   const [probes, setProbes] = useState<Probe[]>([]);
   const probeKey = useRef(0);
+  // The camera page (this browser, see src/lib/boardLink.ts): its calibration screen, whether
+  // it can read the marker writing, and a way to ask it to.
+  const [calibrationScreen, setCalibrationScreen] = useState<CalibrationScreen>("off");
+  const cameraReadyRef = useRef(false);
+  const requestPictureRef = useRef<((area: ShareRect) => Promise<{ image: string; scale: number }>) | null>(null);
+  // The drawing area goes plain for a moment while the camera takes its picture, so it sees only real writing.
+  const [blank, setBlank] = useState(false);
 
   const addStroke = useCallback(
     (stroke: StrokeDraft) => dispatch({ type: "add", stroke }),
@@ -147,7 +163,41 @@ export function Whiteboard() {
         height: rect?.height ?? 0,
       };
 
-      const ink = exportInk(board.strokes, viewport, { numberLines: action === "check" });
+      // What to read: when the camera page is ready, the marker writing on the board (with any marks
+      // made with the mouse on top); otherwise the marks made on the board.
+      let ink: InkImage | null;
+      const requestPicture = requestPictureRef.current;
+      if (cameraReadyRef.current && requestPicture && rect) {
+        setAi({ state: "capturing", action });
+        try {
+          const shot = await requestPicture({
+            x: rect.left / window.innerWidth,
+            y: rect.top / window.innerHeight,
+            width: rect.width / window.innerWidth,
+            height: rect.height / window.innerHeight,
+          });
+          ink = await exportBoardPicture(shot.image, shot.scale, board.strokes, viewport, {
+            numberLines: action === "check",
+          });
+        } catch (error) {
+          setAi({
+            state: "message",
+            tone: "error",
+            text: error instanceof Error ? error.message : "The camera could not take a picture of the board.",
+          });
+          return;
+        }
+        if (!ink) {
+          setAi({
+            state: "message",
+            tone: "info",
+            text: "I couldn't see any writing on the board. Write a little larger and darker, inside the drawing area, and keep your hand away while the picture is taken.",
+          });
+          return;
+        }
+      } else {
+        ink = exportInk(board.strokes, viewport, { numberLines: action === "check" });
+      }
       if (!ink) {
         const somethingElsewhere = board.strokes.some((s) => s.tool !== "eraser");
         const nothingYet = {
@@ -309,7 +359,7 @@ export function Whiteboard() {
       }
 
       const undoing = spoken.kind === "command" && spoken.command === "undo";
-      if (!undoing && ai.state === "loading") {
+      if (!undoing && (ai.state === "loading" || ai.state === "capturing")) {
         setVoice({
           state: "message",
           tone: "info",
@@ -349,6 +399,121 @@ export function Whiteboard() {
     }
   }, [listening, startListening, stopListening]);
 
+  // A finger seen by the camera page arrives over a channel (see src/lib/boardLink.ts). It writes on
+  // the board like a pen, and presses buttons and drags sliders like a finger on a touch screen.
+  useEffect(() => {
+    const channel = new BroadcastChannel(BOARD_CHANNEL);
+    const finger = new FingerUi();
+    // What the pointer is over is reported back to the camera page, at most a few times a second.
+    let lastReport = { over: null as string | null, touching: false, at: -Infinity };
+    const target = {
+      get canvas() {
+        return canvasRef.current?.canvas() ?? null;
+      },
+      draw: (point: Point | null, down: boolean) => canvasRef.current?.finger(point, down),
+      // Shown with the same marker as the camera service's finger (BusFeedback).
+      ring: (point: Point | null, touching: boolean) => {
+        if (point) feedbackRef.current?.pointer(point.x, point.y, touching);
+        else feedbackRef.current?.hidePointer();
+      },
+      report: (over: string | null, touching: boolean) => {
+        const now = performance.now();
+        if (over === lastReport.over && touching === lastReport.touching && now - lastReport.at < 500) return;
+        lastReport = { over, touching, at: now };
+        const message: BoardMessage = { type: "finger-state", over, touching };
+        channel.postMessage(message);
+      },
+      clicked: (label: string) => {
+        const message: BoardMessage = { type: "finger-click", label };
+        channel.postMessage(message);
+      },
+    };
+
+    // If the camera page goes away during calibration, the calibration screen must not stay up for good.
+    let markersTimer = 0;
+
+    // Pictures of the marker writing asked of the camera page, by request number.
+    const pending = new Map<
+      number,
+      { resolve: (shot: { image: string; scale: number }) => void; reject: (error: Error) => void; timer: number }
+    >();
+    let nextId = 1;
+    let cameraSeen = -Infinity;
+    requestPictureRef.current = (area) =>
+      new Promise((resolve, reject) => {
+        const id = nextId++;
+        const timer = window.setTimeout(() => {
+          pending.delete(id);
+          setBlank(false);
+          reject(new Error("The camera page did not send a picture. Is it open, with the camera on and calibrated?"));
+        }, 12_000);
+        pending.set(id, { resolve, reject, timer });
+        const request: BoardMessage = { type: "capture-request", id, area };
+        channel.postMessage(request);
+      });
+
+    channel.onmessage = (event: MessageEvent<unknown>) => {
+      const message = event.data;
+      if (!isBoardMessage(message)) return;
+
+      if (message.type === "camera") {
+        cameraSeen = performance.now();
+        cameraReadyRef.current = message.ready;
+      } else if (message.type === "blank") {
+        if (pending.has(message.id)) setBlank(message.on);
+      } else if (message.type === "capture" || message.type === "capture-failed") {
+        const waiting = pending.get(message.id);
+        if (!waiting) return;
+        pending.delete(message.id);
+        window.clearTimeout(waiting.timer);
+        setBlank(false);
+        if (message.type === "capture") waiting.resolve({ image: message.image, scale: message.scale });
+        else waiting.reject(new Error(message.reason));
+      } else if (message.type === "markers") {
+        window.clearTimeout(markersTimer);
+        setCalibrationScreen(message.screen);
+        if (message.screen !== "off") markersTimer = window.setTimeout(() => setCalibrationScreen("off"), 20_000);
+      } else if (message.type === "pointer") {
+        finger.update(
+          message.x * window.innerWidth,
+          message.y * window.innerHeight,
+          message.writing,
+          message.draw,
+          target,
+        );
+      } else if (message.type === "pointer-lost") {
+        finger.lost(target);
+      }
+    };
+
+    // Tell the camera page that this window is here, and how big it is.
+    const announce = () => {
+      const alive: BoardMessage = { type: "alive", width: window.innerWidth, height: window.innerHeight };
+      channel.postMessage(alive);
+    };
+    announce();
+    const timer = window.setInterval(() => {
+      announce();
+      // The camera page says every second whether it is ready; silence means it is gone.
+      if (cameraReadyRef.current && performance.now() - cameraSeen > 2500) cameraReadyRef.current = false;
+    }, 1000);
+    window.addEventListener("resize", announce);
+
+    return () => {
+      window.clearInterval(timer);
+      window.clearTimeout(markersTimer);
+      window.removeEventListener("resize", announce);
+      finger.lost(target);
+      requestPictureRef.current = null;
+      for (const waiting of pending.values()) {
+        window.clearTimeout(waiting.timer);
+        waiting.reject(new Error("The whiteboard was closed."));
+      }
+      pending.clear();
+      channel.close();
+    };
+  }, []);
+
   // The camera service: a finger on the board, hand gestures, and calibration.
   const handleBusInput = useBusInput({ canvas: canvasRef, feedback: feedbackRef, pan, toggleTool, resetView });
   const handleBusEvent = useCallback(
@@ -373,7 +538,7 @@ export function Whiteboard() {
     [busSend],
   );
   // Calibration needs the board clear, so the controls step aside while it shows things.
-  const calibrating = pattern !== null || targets.length > 0;
+  const calibrating = pattern !== null || targets.length > 0 || calibrationScreen !== "off";
 
   // Ctrl/Cmd+Z undoes the last change to the board.
   useEffect(() => {
@@ -443,7 +608,12 @@ export function Whiteboard() {
             }
           })}
         </div>
+
+        {/* Plain board over everything while the camera page takes its picture of the marker writing. */}
+        {blank && <div aria-hidden="true" className="absolute inset-0 z-40 bg-white" />}
       </main>
+
+      {calibrationScreen !== "off" && <CalibrationMarkers screen={calibrationScreen} />}
 
       {!calibrating && (
         <ActionDial
