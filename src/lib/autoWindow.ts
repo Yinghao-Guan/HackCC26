@@ -4,8 +4,8 @@
  * to see (where a curve crosses an axis, and its turning points) are on screen.
  */
 
-import { tryCompileFormula, type Formula } from "./expression";
-import type { GraphCurve, GraphWindow } from "./graph";
+import { tryCompileFormula, type Formula, type Variable } from "./expression";
+import type { GraphCurve, GraphPoint, GraphSurface, GraphWindow, GraphWindow3D } from "./graph";
 
 // Windows run from -R to R. These are the sizes R can take.
 const RADII = [6, 12, 25, 50, 100, 250, 1000];
@@ -110,4 +110,67 @@ export function autoWindow(curves: GraphCurve[]): GraphWindow {
   if (anyImplicit || Math.max(rx, ry) / Math.min(rx, ry) < 4) rx = ry = Math.max(rx, ry);
 
   return { xMin: -rx, xMax: rx, yMin: -ry, yMax: ry };
+}
+
+// ---------------------------------------------------------------------------
+// 3D
+// ---------------------------------------------------------------------------
+
+const RADII_3D = [5, 10, 20, 50, 100];
+const HEIGHT_SAMPLES = 30;
+
+/**
+ * Pick a box of 3D space to show: a cube around the origin that is big enough
+ * for any notable points, stretched along the axis a surface rises on so that
+ * the surface is not cut off too early.
+ */
+export function autoWindow3D(surfaces: GraphSurface[], points: GraphPoint[]): GraphWindow3D {
+  const reach = Math.max(
+    3.5,
+    ...points.flatMap((point) => [Math.abs(point.x), Math.abs(point.y), Math.abs(point.z)]),
+  );
+  const R = RADII_3D.find((r) => 0.8 * r >= reach) ?? RADII_3D[RADII_3D.length - 1];
+
+  const lo: Record<Variable, number> = { x: -R, y: -R, z: -R };
+  const hi: Record<Variable, number> = { x: R, y: R, z: R };
+  const stretched = new Set<Variable>();
+
+  for (const surface of surfaces) {
+    const formula = tryCompileFormula(surface.expression);
+    if (!formula) continue;
+
+    // How high or low does this surface go, over the cube's footprint?
+    const [uAxis, vAxis] = (["x", "y", "z"] as const).filter((axis) => axis !== surface.solveFor);
+    let min = Infinity;
+    let max = -Infinity;
+    for (let j = 0; j <= HEIGHT_SAMPLES; j++) {
+      for (let i = 0; i <= HEIGHT_SAMPLES; i++) {
+        const point = { x: 0, y: 0, z: 0 };
+        point[uAxis] = -R + (2 * R * i) / HEIGHT_SAMPLES;
+        point[vAxis] = -R + (2 * R * j) / HEIGHT_SAMPLES;
+        const height = formula(point.x, point.y, point.z);
+        if (Number.isFinite(height)) {
+          min = Math.min(min, height);
+          max = Math.max(max, height);
+        }
+      }
+    }
+    if (min > max) continue;
+
+    let from = Math.max(-2 * R, Math.min(0, min)) - 0.05 * R;
+    let to = Math.min(2 * R, Math.max(0, max)) + 0.05 * R;
+    if (to - from < R) {
+      const middle = (from + to) / 2;
+      from = middle - R / 2;
+      to = middle + R / 2;
+    }
+
+    const axis = surface.solveFor;
+    // Several surfaces on one axis share one range that covers them all.
+    lo[axis] = stretched.has(axis) ? Math.min(lo[axis], from) : from;
+    hi[axis] = stretched.has(axis) ? Math.max(hi[axis], to) : to;
+    stretched.add(axis);
+  }
+
+  return { xMin: lo.x, xMax: hi.x, yMin: lo.y, yMax: hi.y, zMin: lo.z, zMax: hi.z };
 }

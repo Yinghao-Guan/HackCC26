@@ -11,6 +11,7 @@ export interface Size {
 }
 
 export const ANSWER_CARD_WIDTH = 380;
+export const CHECK_CARD_WIDTH = 440;
 export const GRAPH_PLOT_SIZE = 400;
 export const GRAPH_CARD_WIDTH = GRAPH_PLOT_SIZE + 40;
 
@@ -25,6 +26,18 @@ export function answerCardSize(stepCount: number): Size {
 
 export function graphCardSize(curveCount: number): Size {
   return { width: GRAPH_CARD_WIDTH, height: 90 + GRAPH_PLOT_SIZE + curveCount * 44 };
+}
+
+/** A 3D graph has a hint line under the plot, and a line for each marked point. */
+export function graph3dCardSize(surfaceCount: number, pointCount: number): Size {
+  return {
+    width: GRAPH_CARD_WIDTH,
+    height: 130 + GRAPH_PLOT_SIZE + (surfaceCount + pointCount) * 44,
+  };
+}
+
+export function checkCardSize(stepCount: number): Size {
+  return { width: CHECK_CARD_WIDTH, height: 280 + stepCount * 48 };
 }
 
 const overlaps = (a: Rect, b: Rect) =>

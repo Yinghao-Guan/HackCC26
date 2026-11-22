@@ -1,8 +1,9 @@
+import { parseCheckResult, type CheckResult } from "@/lib/check";
 import { parseGraphResult, type GraphResult } from "@/lib/graph";
 import { parseSolveResult, type SolveResult } from "@/lib/solve";
 
 /** The things the AI buttons can do. */
-export type AiAction = "solve" | "graph";
+export type AiAction = "solve" | "graph" | "check";
 
 /** What the panel shows under the AI buttons. */
 export type AiStatus =
@@ -13,16 +14,17 @@ export type AiStatus =
 const REQUEST_TIMEOUT_MS = 90_000;
 
 /**
- * Send the board's image to one of the AI routes and return its JSON reply.
- * Throws an Error with a message that is fine to show the user.
+ * Send the board's image (and anything else in `payload`) to one of the AI
+ * routes and return its JSON reply. Throws an Error with a message that is
+ * fine to show the user.
  */
-async function postImage(url: string, image: string): Promise<unknown> {
+async function post(url: string, payload: Record<string, unknown>): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
@@ -48,14 +50,24 @@ const UNEXPECTED_FORMAT = "The answer came back in an unexpected format.";
 
 /** Have the AI read the board and solve the problem on it. */
 export async function requestSolve(image: string): Promise<SolveResult> {
-  const result = parseSolveResult(await postImage("/api/solve", image));
+  const result = parseSolveResult(await post("/api/solve", { image }));
   if (!result) throw new Error(UNEXPECTED_FORMAT);
   return result;
 }
 
 /** Have the AI read the equations on the board and say how to graph them. */
 export async function requestGraph(image: string): Promise<GraphResult> {
-  const result = parseGraphResult(await postImage("/api/graph", image));
+  const result = parseGraphResult(await post("/api/graph", { image }));
+  if (!result) throw new Error(UNEXPECTED_FORMAT);
+  return result;
+}
+
+/**
+ * Have the AI check worked steps for mistakes. The image has `lineCount`
+ * numbered lines, and the AI says which number is the first wrong one.
+ */
+export async function requestCheck(image: string, lineCount: number): Promise<CheckResult> {
+  const result = parseCheckResult(await post("/api/check", { image, lineCount }), lineCount);
   if (!result) throw new Error(UNEXPECTED_FORMAT);
   return result;
 }

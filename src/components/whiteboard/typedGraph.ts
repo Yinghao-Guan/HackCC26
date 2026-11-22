@@ -1,20 +1,16 @@
 import { graphFromLines } from "@/lib/equations";
-import type { GraphCurve, GraphWindow } from "@/lib/graph";
+import type { GraphResult } from "@/lib/graph";
 import type { Rect } from "./layout";
 import { isInView, strokeBounds, type Stroke } from "./strokes";
 
-export interface TypedGraph {
-  curves: GraphCurve[];
-  window: GraphWindow;
-  /** Where the typed equations sit on the board. */
-  ink: Rect;
-}
+/** A graph worked out from typed equations, and where those equations sit on the board. */
+export type TypedGraph = Extract<GraphResult, { status: "graphed" }> & { ink: Rect };
 
 /**
  * If what is in view is only typed equations that can be read directly (like
- * `y = x^2 - 3x + 2`), work out the graph right here: no AI, no waiting. Gives
- * null when anything else is in view (handwriting, prose, LaTeX...), and the
- * AI should be asked instead.
+ * `y = x^2 - 3x + 2`, or `z = x^2 + y^2` for 3D), work out the graph right
+ * here: no AI, no waiting. Gives null when anything else is in view
+ * (handwriting, prose, LaTeX...), and the AI should be asked instead.
  */
 export function graphFromTypedText(strokes: Stroke[], viewport: Rect): TypedGraph | null {
   const marks = strokes.filter((stroke) => stroke.tool !== "eraser" && isInView(stroke, viewport));

@@ -1,12 +1,20 @@
 /**
  * A small, safe formula evaluator for graphs. It reads what students write: the
- * variables x and y, + - * / ^, parentheses, common functions, and the
+ * variables x, y and z, + - * / ^, parentheses, common functions, and the
  * constants pi and e. Multiplication can be written with * or by putting things
  * side by side (2x, 3(x+1), (x+1)(x-1)). It never runs arbitrary code.
  */
 
-/** A formula as a function of x and y. It gives NaN or Infinity where it is undefined. */
-export type Formula = (x: number, y: number) => number;
+/**
+ * A formula as a function of x, y and (for 3D) z. It gives NaN or Infinity where
+ * it is undefined. A 2D formula can be called with just x and y.
+ */
+export type Formula = (x: number, y: number, z?: number) => number;
+
+/** Inside the evaluator every piece is called with all three variables. */
+type Node = (x: number, y: number, z: number) => number;
+
+export type Variable = "x" | "y" | "z";
 
 type Token =
   | { kind: "number"; value: number }
@@ -40,7 +48,7 @@ const FUNCTIONS: Record<string, (n: number) => number> = {
 };
 
 const CONSTANTS: Record<string, number> = { pi: Math.PI, e: Math.E };
-const VARIABLES = new Set(["x", "y"]);
+const VARIABLES = new Set<string>(["x", "y", "z"]);
 const MAX_LENGTH = 500;
 
 // Characters that show up in typed or recognized maths, mapped to what we parse.
@@ -135,20 +143,20 @@ export function compileFormula(source: string): Formula {
   };
 
   // sum := product (("+" | "-") product)*
-  const sum = (): Formula => {
+  const sum = (): Node => {
     let left = product();
     while (isSymbol("+") || isSymbol("-")) {
       const plus = isSymbol("+");
       pos++;
       const l = left;
       const r = product();
-      left = plus ? (x, y) => l(x, y) + r(x, y) : (x, y) => l(x, y) - r(x, y);
+      left = plus ? (x, y, z) => l(x, y, z) + r(x, y, z) : (x, y, z) => l(x, y, z) - r(x, y, z);
     }
     return left;
   };
 
   // product := unary (("*" | "/")? unary)*
-  const product = (): Formula => {
+  const product = (): Node => {
     let left = unary();
     for (;;) {
       let divide = false;
@@ -160,17 +168,17 @@ export function compileFormula(source: string): Formula {
 
       const l = left;
       const r = unary();
-      left = divide ? (x, y) => l(x, y) / r(x, y) : (x, y) => l(x, y) * r(x, y);
+      left = divide ? (x, y, z) => l(x, y, z) / r(x, y, z) : (x, y, z) => l(x, y, z) * r(x, y, z);
     }
     return left;
   };
 
   // unary := ("-" | "+") unary | power
-  const unary = (): Formula => {
+  const unary = (): Node => {
     if (isSymbol("-")) {
       pos++;
       const inner = unary();
-      return (x, y) => -inner(x, y);
+      return (x, y, z) => -inner(x, y, z);
     }
     if (isSymbol("+")) {
       pos++;
@@ -180,17 +188,17 @@ export function compileFormula(source: string): Formula {
   };
 
   // power := primary ("^" unary)?   (right to left, so x^2^3 is x^(2^3), and -x^2 is -(x^2))
-  const power = (): Formula => {
+  const power = (): Node => {
     const base = primary();
     if (isSymbol("^")) {
       pos++;
       const exponent = unary();
-      return (x, y) => Math.pow(base(x, y), exponent(x, y));
+      return (x, y, z) => Math.pow(base(x, y, z), exponent(x, y, z));
     }
     return base;
   };
 
-  const primary = (): Formula => {
+  const primary = (): Node => {
     const token = tokens[pos];
     if (!token) return fail("The formula ends too soon.");
 
@@ -208,10 +216,11 @@ export function compileFormula(source: string): Formula {
         const apply = FUNCTIONS[name];
         const argument = sum();
         expectClose();
-        return (x, y) => apply(argument(x, y));
+        return (x, y, z) => apply(argument(x, y, z));
       }
       if (name === "x") return (x) => x;
       if (name === "y") return (_x, y) => y;
+      if (name === "z") return (_x, _y, z) => z;
       if (Object.hasOwn(CONSTANTS, name)) {
         const value = CONSTANTS[name];
         return () => value;
@@ -229,13 +238,13 @@ export function compileFormula(source: string): Formula {
     return fail(`Unexpected "${token.value}" in the formula.`);
   };
 
-  const formula = sum();
+  const root = sum();
   if (pos < tokens.length) fail("Something is left over at the end of the formula.");
-  return formula;
+  return (x, y, z = 0) => root(x, y, z);
 }
 
 /** Does the formula mention this variable? False if it can't be read at all. */
-export function usesVariable(source: string, name: "x" | "y"): boolean {
+export function usesVariable(source: string, name: Variable): boolean {
   try {
     return tokenize(source).some((token) => token.kind === "name" && token.value === name);
   } catch {

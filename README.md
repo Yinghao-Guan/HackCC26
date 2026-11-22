@@ -37,6 +37,14 @@ Write a math problem on the board and press **Solve** in the side panel. The boa
 
 Write an equation (or a few, like a system) and press **Graph**. Claude reads them through `src/app/api/graph/` and says how to plot each one: a formula and a sensible window. The board then draws the curves itself, as a crisp SVG with axes and a color key, next to your writing. Explicit functions (`y = x^2 - 3x + 2`, lines, `sin`, `1/x`) and implicit ones (circles, hyperbolas) both work. If what is on screen is only **typed** equations (Text tool) that follow the usual forms, the graph is drawn right away on your machine: no AI call, no waiting (about 14 ms in testing), and it works offline. Handwriting, sentences, LaTeX and anything unclear still go to Claude (a few seconds). The formula evaluator is in `src/lib/expression.ts` and the drawing math is in `src/lib/plot.ts`; neither needs a library.
 
+### 3D graphs
+
+If an equation uses `z`, **Graph** shows a 3D view instead: surfaces such as `z = x^2 + y^2`, planes, and systems of planes (three planes that meet in one point get that point marked, e.g. `(1, 2, 3)`). Drag to turn it, scroll or pinch to zoom, right-drag or use two fingers to move it, and use the **−**, **+** and **Reset** buttons if you prefer. Typed equations of these forms are drawn instantly on your machine. Anything else (handwriting, a sphere such as `x^2 + y^2 + z^2 = 9`) goes to Claude, which splits curved shapes into surfaces that are a function of the other two variables (a sphere becomes a top and a bottom half). The 3D view uses [three.js](https://threejs.org), loaded only when a 3D graph is shown; the mesh math is in `src/lib/surface.ts`.
+
+## AI: Check (find the mistake)
+
+Write a problem and your worked steps, one step per line, and press **Check**. The board's ink is split into lines on your machine and sent to Claude (through `src/app/api/check/`) with a red number beside each line. Claude finds the **first** step that does not follow, says why, shows how that line should read, carries on to the right answer, and the wrong line is circled on the board with a **Step N** tag. If all the steps are right, it says so instead. Because the line numbers come from our own line-splitting, the circle always lands on the line Claude meant. Leave a little space between lines so they can be told apart.
+
 ## Scripts
 
 | Command | What it does |
@@ -51,8 +59,9 @@ Write an equation (or a few, like a system) and press **Graph**. Claude reads th
 ```
 src/app/                    App Router: layout, pages, global styles
 src/app/api/solve/          Server route: reads the board image and solves it
-src/app/api/graph/          Server route: reads the board image and lists the curves to graph
-src/components/whiteboard/  Drawing canvas, stroke model, settings panel, answer cards
+src/app/api/graph/          Server route: reads the board image and lists the curves or surfaces to graph
+src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
+src/components/whiteboard/  Drawing canvas, stroke model, settings panel, answer, graph (2D and 3D) and check cards
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```

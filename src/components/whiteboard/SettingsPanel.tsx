@@ -22,6 +22,7 @@ interface SettingsPanelProps {
   ai: AiStatus;
   onSolve: () => void;
   onGraph: () => void;
+  onCheck: () => void;
   onUndo: () => void;
   onClear: () => void;
   onResetView: () => void;
@@ -78,6 +79,7 @@ export function SettingsPanel({
   ai,
   onSolve,
   onGraph,
+  onCheck,
   onUndo,
   onClear,
   onResetView,
@@ -103,7 +105,7 @@ export function SettingsPanel({
       <h2 className="text-lg font-semibold tracking-tight">Settings</h2>
 
       <PanelSection title="AI">
-        <div className="grid grid-cols-2 gap-2">
+        <div className="grid grid-cols-3 gap-2">
           <button
             type="button"
             onClick={onSolve}
@@ -120,6 +122,14 @@ export function SettingsPanel({
           >
             {ai.state === "loading" && ai.action === "graph" ? "Drawing…" : "Graph"}
           </button>
+          <button
+            type="button"
+            onClick={onCheck}
+            disabled={ai.state === "loading"}
+            className="h-14 rounded-lg bg-violet-600 text-lg font-semibold text-white transition-colors hover:bg-violet-700 disabled:pointer-events-none disabled:opacity-60"
+          >
+            {ai.state === "loading" && ai.action === "check" ? "Checking…" : "Check"}
+          </button>
         </div>
         <p
           role="status"
@@ -130,10 +140,12 @@ export function SettingsPanel({
           {ai.state === "loading"
             ? ai.action === "graph"
               ? "Reading your equations and drawing the graph. This can take a few seconds."
-              : "Reading your handwriting and solving it. This can take a few seconds."
+              : ai.action === "check"
+                ? "Reading your steps and checking each one. This can take a few seconds."
+                : "Reading your handwriting and solving it. This can take a few seconds."
             : ai.state === "message"
               ? ai.text
-              : "Solve works out the answer. Graph draws the equation, and draws typed equations instantly."}
+              : "Solve works out the answer. Graph draws equations in 2D or 3D (typed ones instantly). Check finds the first mistake in your steps."}
         </p>
       </PanelSection>
 

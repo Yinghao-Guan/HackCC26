@@ -1,5 +1,18 @@
-import type { GraphCurve, GraphWindow } from "@/lib/graph";
-import { answerCardSize, graphCardSize, type Size } from "./layout";
+import type {
+  GraphCurve,
+  GraphPoint,
+  GraphSurface,
+  GraphWindow,
+  GraphWindow3D,
+} from "@/lib/graph";
+import {
+  answerCardSize,
+  checkCardSize,
+  graph3dCardSize,
+  graphCardSize,
+  type Rect,
+  type Size,
+} from "./layout";
 import type { Stroke, StrokeDraft } from "./strokes";
 
 interface Placed {
@@ -26,17 +39,53 @@ export interface GraphCardData extends Placed {
   window: GraphWindow;
 }
 
+/** A 3D graph the AI (or the board) drew from the equations on the board. */
+export interface Graph3DCardData extends Placed {
+  kind: "graph3d";
+  surfaces: GraphSurface[];
+  points: GraphPoint[];
+  window: GraphWindow3D;
+}
+
+/** The AI's check of worked steps: whether they are right, and if not, where it went wrong. */
+export interface CheckCardData extends Placed {
+  kind: "check";
+  verdict: "mistake" | "correct";
+  /** The numbered line (1 is the top line) with the first mistake, if there is one. */
+  step: number | null;
+  /** Where that line is on the board, so it can be circled. */
+  mark: Rect | null;
+  explanation: string;
+  /** What the wrong line should have said, in LaTeX. */
+  correctedLine: string;
+  /** The work carried on correctly to the answer, one LaTeX formula per line. */
+  steps: string[];
+  /** The correct final answer, in LaTeX. */
+  answer: string;
+}
+
 /** Something the AI wrote on the board next to your writing. */
-export type BoardCard = AnswerCardData | GraphCardData;
+export type BoardCard = AnswerCardData | GraphCardData | Graph3DCardData | CheckCardData;
 
 /** A card before it has an id and a place on the board. */
-export type CardContent = Omit<AnswerCardData, keyof Placed> | Omit<GraphCardData, keyof Placed>;
+export type CardContent =
+  | Omit<AnswerCardData, keyof Placed>
+  | Omit<GraphCardData, keyof Placed>
+  | Omit<Graph3DCardData, keyof Placed>
+  | Omit<CheckCardData, keyof Placed>;
 
 /** Roughly how big a card is on the board. */
 export function cardSize(card: CardContent | BoardCard): Size {
-  return card.kind === "answer"
-    ? answerCardSize(card.steps.length)
-    : graphCardSize(card.curves.length);
+  switch (card.kind) {
+    case "answer":
+      return answerCardSize(card.steps.length);
+    case "graph":
+      return graphCardSize(card.curves.length);
+    case "graph3d":
+      return graph3dCardSize(card.surfaces.length, card.points.length);
+    case "check":
+      return checkCardSize(card.steps.length);
+  }
 }
 
 interface Snapshot {

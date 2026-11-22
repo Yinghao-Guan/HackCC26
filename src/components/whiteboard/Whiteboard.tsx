@@ -8,13 +8,16 @@ import {
   useState,
   type WheelEvent,
 } from "react";
-import { requestGraph, requestSolve, type AiAction, type AiStatus } from "./ai";
+import { requestCheck, requestGraph, requestSolve, type AiAction, type AiStatus } from "./ai";
 import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
+import { CheckCard } from "./CheckCard";
 import { DrawingCanvas } from "./DrawingCanvas";
 import { exportInk } from "./exportInk";
+import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
+import { MistakeMark } from "./MistakeMark";
 import { SettingsPanel } from "./SettingsPanel";
 import { DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
 import type { Point, Stroke, StrokeDraft } from "./strokes";
@@ -23,6 +26,9 @@ import { TextEditor, type TextEdit } from "./TextEditor";
 import { graphFromTypedText } from "./typedGraph";
 
 const ORIGIN: Point = { x: 0, y: 0 };
+
+// The check route accepts at most this many numbered lines.
+const MAX_CHECK_LINES = 60;
 
 /** The whole board: a drawing area on the left, a settings panel on the right. */
 export function Whiteboard() {
@@ -68,6 +74,8 @@ export function Whiteboard() {
   /** Scroll with the mouse wheel or a trackpad. */
   const handleWheel = (e: WheelEvent<HTMLElement>) => {
     if (e.ctrlKey) return; // a pinch gesture; leave it to the browser
+    // Things like the 3D view use the wheel themselves (to zoom).
+    if (e.target instanceof Element && e.target.closest("[data-no-pan]")) return;
     const unit = e.deltaMode === 1 ? 16 : 1; // some mouse wheels report lines, not pixels
     pan(e.deltaX * unit, e.deltaY * unit);
   };
@@ -151,8 +159,8 @@ export function Whiteboard() {
   );
 
   /**
-   * Have the AI read what is on screen and write its result (an answer or a
-   * graph) on the board next to the writing.
+   * Have the AI read what is on screen and write its result (an answer, a
+   * graph, or a check of your steps) on the board next to the writing.
    */
   const runAi = useCallback(
     async (action: AiAction) => {
@@ -168,23 +176,40 @@ export function Whiteboard() {
       if (action === "graph") {
         const typed = graphFromTypedText(board.strokes, viewport);
         if (typed) {
-          addCard({ kind: "graph", curves: typed.curves, window: typed.window }, typed.ink, viewport);
+          addCard(
+            typed.dimension === "3d"
+              ? { kind: "graph3d", surfaces: typed.surfaces, points: typed.points, window: typed.window3d }
+              : { kind: "graph", curves: typed.curves, window: typed.window },
+            typed.ink,
+            viewport,
+          );
           setAi({ state: "idle" });
           return;
         }
       }
 
-      const ink = exportInk(board.strokes, viewport);
+      const ink = exportInk(board.strokes, viewport, { numberLines: action === "check" });
       if (!ink) {
         const somethingElsewhere = board.strokes.some((s) => s.tool !== "eraser");
+        const nothingYet = {
+          solve: "Write a math problem on the board first.",
+          graph: "Write an equation on the board first.",
+          check: "Write your worked steps on the board first.",
+        }[action];
         setAi({
           state: "message",
           tone: "info",
           text: somethingElsewhere
             ? "I read what's on screen. Scroll to your writing and try again."
-            : action === "graph"
-              ? "Write an equation on the board first."
-              : "Write a math problem on the board first.",
+            : nothingYet,
+        });
+        return;
+      }
+      if (action === "check" && ink.lines.length > MAX_CHECK_LINES) {
+        setAi({
+          state: "message",
+          tone: "info",
+          text: "That is a lot of lines. Scroll so fewer are on screen and try again.",
         });
         return;
       }
@@ -199,13 +224,45 @@ export function Whiteboard() {
             return;
           }
           content = { kind: "answer", read: result.read, steps: result.steps, answer: result.answer };
-        } else {
+        } else if (action === "graph") {
           const result = await requestGraph(ink.dataUrl);
           if (result.status !== "graphed") {
             setAi({ state: "message", tone: "info", text: result.message });
             return;
           }
-          content = { kind: "graph", curves: result.curves, window: result.window };
+          content =
+            result.dimension === "3d"
+              ? { kind: "graph3d", surfaces: result.surfaces, points: result.points, window: result.window3d }
+              : { kind: "graph", curves: result.curves, window: result.window };
+        } else {
+          const result = await requestCheck(ink.dataUrl, ink.lines.length);
+          if (result.status === "mistake") {
+            content = {
+              kind: "check",
+              verdict: "mistake",
+              step: result.wrongLine,
+              // The line numbers on the image are our own, so we know exactly where that line is.
+              mark: result.wrongLine ? (ink.lines[result.wrongLine - 1] ?? null) : null,
+              explanation: result.explanation,
+              correctedLine: result.correctedLine,
+              steps: result.steps,
+              answer: result.answer,
+            };
+          } else if (result.status === "correct") {
+            content = {
+              kind: "check",
+              verdict: "correct",
+              step: null,
+              mark: null,
+              explanation: result.explanation,
+              correctedLine: "",
+              steps: [],
+              answer: result.answer,
+            };
+          } else {
+            setAi({ state: "message", tone: "info", text: result.message });
+            return;
+          }
         }
 
         addCard(content, ink.bounds, viewport);
@@ -222,6 +279,7 @@ export function Whiteboard() {
   );
   const solve = useCallback(() => runAi("solve"), [runAi]);
   const graph = useCallback(() => runAi("graph"), [runAi]);
+  const check = useCallback(() => runAi("check"), [runAi]);
 
   // Ctrl/Cmd+Z undoes the last change to the board.
   useEffect(() => {
@@ -280,21 +338,24 @@ export function Whiteboard() {
             />
           )}
 
-          {board.cards.map((card) =>
-            card.kind === "answer" ? (
-              <AnswerCard
-                key={card.id}
-                card={card}
-                onDismiss={() => dispatch({ type: "removeCard", id: card.id })}
-              />
-            ) : (
-              <GraphCard
-                key={card.id}
-                card={card}
-                onDismiss={() => dispatch({ type: "removeCard", id: card.id })}
-              />
-            ),
-          )}
+          {board.cards.map((card) => {
+            const dismiss = () => dispatch({ type: "removeCard", id: card.id });
+            switch (card.kind) {
+              case "answer":
+                return <AnswerCard key={card.id} card={card} onDismiss={dismiss} />;
+              case "graph":
+                return <GraphCard key={card.id} card={card} onDismiss={dismiss} />;
+              case "graph3d":
+                return <Graph3DCard key={card.id} card={card} onDismiss={dismiss} />;
+              case "check":
+                return (
+                  <div key={card.id}>
+                    {card.mark && <MistakeMark box={card.mark} step={card.step} />}
+                    <CheckCard card={card} onDismiss={dismiss} />
+                  </div>
+                );
+            }
+          })}
         </div>
       </main>
 
@@ -307,6 +368,7 @@ export function Whiteboard() {
         ai={ai}
         onSolve={solve}
         onGraph={graph}
+        onCheck={check}
         onUndo={undo}
         onClear={clear}
         onResetView={resetView}

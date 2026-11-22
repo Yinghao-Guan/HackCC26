@@ -16,8 +16,13 @@ export function fail(error: string, status: number): Response {
   return Response.json({ error }, { status });
 }
 
-/** Get the board's image (a PNG data URL) out of a request, or an error response to send back. */
-export async function readBoardImage(request: Request): Promise<Outcome<string>> {
+/**
+ * Get the board's image (a PNG data URL) out of a request, along with the rest of
+ * the JSON body, or an error response to send back.
+ */
+export async function readBoardRequest(
+  request: Request,
+): Promise<Outcome<{ image: string; body: Record<string, unknown> }>> {
   let body: unknown;
   try {
     body = await request.json();
@@ -37,7 +42,7 @@ export async function readBoardImage(request: Request): Promise<Outcome<string>>
       response: fail("Send the board as a PNG image data URL (under 5 MB).", 400),
     };
   }
-  return { ok: true, value: image };
+  return { ok: true, value: { image, body: body as Record<string, unknown> } };
 }
 
 interface AskOptions {
