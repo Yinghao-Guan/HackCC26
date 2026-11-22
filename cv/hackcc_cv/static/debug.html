@@ -34,22 +34,36 @@
   /* ArUco calibration pattern: pure white page, crisp black-and-white markers. */
   #pattern { position: fixed; inset: 0; background: #ffffff; display: none; z-index: 50; }
   #pattern img { position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  /* Hands and gestures */
+  #handLayer { position: fixed; inset: 0; pointer-events: none; }
+  .hand { position: absolute; transform: translate(-50%, -50%); font: 600 12px system-ui, sans-serif;
+    color: #1d4ed8; background: rgba(255,255,255,.85); border: 2px solid #1d4ed8; border-radius: 999px; padding: 2px 8px; }
+  .tip { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #1d4ed8; }
+  #ring { position: fixed; left: 50%; top: 24px; transform: translateX(-50%); display: none; }
   button { font: inherit; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: #f9fafb; cursor: pointer; }
 </style>
 </head>
 <body>
 <canvas id="board" aria-label="Pointer events drawn as ink"></canvas>
 <div id="overlay" aria-hidden="true"></div>
+<div id="handLayer" aria-hidden="true"></div>
+<svg id="ring" width="72" height="72" viewBox="0 0 72 72" aria-label="Reset countdown"><circle cx="36" cy="36" r="30" fill="#fff" stroke="#e5e7eb" stroke-width="8"/><circle id="ringArc" cx="36" cy="36" r="30" fill="none" stroke="#2563eb" stroke-width="8" stroke-dasharray="188.5" stroke-dashoffset="188.5" transform="rotate(-90 36 36)"/></svg>
 <div id="pattern" aria-hidden="true"></div>
 <div id="panel">
   <h1>CV bus debug: WebSocket <span id="url" class="muted"></span></h1>
   <div class="row"><span>Connection</span><span id="conn" class="bad">connecting…</span></div>
   <div class="row"><span>Camera</span><span id="cam" class="muted">?</span></div>
   <div class="row"><span>Calibration</span><span id="cal" class="muted">?</span></div>
+  <div class="row"><span>Hand tracking</span><span id="trk" class="muted">?</span></div>
+  <div class="row"><span>Tool (double tap)</span><span id="tool">none</span></div>
+  <div class="row"><span>Board moved (fist)</span><span id="pan">0, 0</span></div>
+  <div class="row"><span>Zoom (two pinches)</span><span id="zoom">1.00×</span></div>
+  <div class="row"><span>3D turn (pinch hold)</span><span id="rot">0, 0</span></div>
+  <div class="row"><span>Last gesture</span><span id="last" class="muted">none</span></div>
   <div class="row"><span>Display sent</span><span id="disp" class="muted">?</span></div>
   <div class="row"><span>Pointer</span><span id="ptr" class="muted">none yet</span></div>
   <div class="row"><span>Round trip</span><span id="rtt" class="muted">?</span></div>
-  <div class="row"><button id="toggle" type="button">Show camera</button><a href="/calibrate" target="_blank">Calibrate…</a><button id="clear" type="button">Clear ink</button></div>
+  <div class="row"><button id="toggle" type="button">Show camera</button><a href="/calibrate" target="_blank">Calibrate…</a><a href="/gestures" target="_blank">Gesture Lab…</a><button id="clear" type="button">Clear ink</button></div>
   <img id="preview" alt="Live camera preview">
   <div id="log"></div>
 </div>
@@ -134,12 +148,56 @@
     setTimeout(() => el.remove(), 4000);
   }
 
+  // What the web app would do with each gesture (a demo of the agreed rules).
+  const view = { tool: "none", panX: 0, panY: 0, zoom: 1, zoomBase: 1, rotX: 0, rotY: 0 };
+  function showView() {
+    $("tool").textContent = view.tool;
+    $("pan").textContent = `${view.panX.toFixed(0)}, ${view.panY.toFixed(0)}`;
+    $("zoom").textContent = `${view.zoom.toFixed(2)}×`;
+    $("rot").textContent = `${view.rotX.toFixed(0)}, ${view.rotY.toFixed(0)}`;
+  }
+  function onGesture(e) {
+    $("last").textContent = `${e.type === "gesture" ? e.name : e.type + " " + e.phase} (${new Date().toLocaleTimeString()})`;
+    if (e.type === "gesture" && e.name === "double_tap") view.tool = view.tool === "eraser" ? "pen" : "eraser";
+    if (e.type === "gesture" && e.name === "reset") Object.assign(view, { panX: 0, panY: 0, zoom: 1, zoomBase: 1, rotX: 0, rotY: 0 });
+    if (e.type === "pan" && e.phase === "move") { view.panX += e.dx; view.panY += e.dy; }
+    if (e.type === "rotate" && e.phase === "move") { view.rotX += e.dx; view.rotY += e.dy; }
+    if (e.type === "zoom") { if (e.phase === "start") view.zoomBase = view.zoom; view.zoom = view.zoomBase * e.scale; }
+    showView();
+  }
+  function showHands(e) {
+    const layer = $("handLayer");
+    layer.replaceChildren();
+    for (const h of e.hands) {
+      const label = document.createElement("div");
+      label.className = "hand"; label.textContent = `${h.hand}: ${h.pose}`;
+      label.style.left = `${h.palm[0]}px`; label.style.top = `${h.palm[1]}px`;
+      const tip = document.createElement("div");
+      tip.className = "tip"; tip.style.left = `${h.index_tip[0]}px`; tip.style.top = `${h.index_tip[1]}px`;
+      layer.append(label, tip);
+    }
+  }
+  function showRing(progress) {
+    $("ring").style.display = progress > 0 && progress < 1 ? "block" : "none";
+    $("ringArc").setAttribute("stroke-dashoffset", String(188.5 * (1 - progress)));
+  }
+
   function onEvent(e) {
     switch (e.type) {
       case "pointer": drawPointer(e); return;
       case "calibration_targets": showTargets(e.targets); break;
       case "calibration_probe": showProbe(e); break;
       case "calibration_pattern": showPattern(e.markers, true, e.run); break;
+      case "hands": showHands(e); return;
+      case "reset_progress": showRing(e.progress); return;
+      case "gesture": case "pan": case "rotate": case "zoom":
+        onGesture(e); if (e.type !== "gesture" && e.phase === "move") return; break;
+      case "tracking": {
+        const el = $("trk");
+        el.textContent = e.status === "ok" ? "ok" : `${e.status}: ${e.message}`;
+        el.className = e.status === "ok" ? "ok" : "bad";
+        break;
+      }
       case "calibration": {
         const el = $("cal");
         el.textContent = e.status === "ok" ? `ok (${e.method}, ${e.reproj_error_px} px)` : `${e.status}: ${e.message}`;
