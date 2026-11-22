@@ -8,10 +8,12 @@ from __future__ import annotations
 import argparse
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any
 
 BACKENDS = ("dshow", "msmf", "any")
+DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 DEFAULT_ORIGINS = (
     "http://localhost:3000",
@@ -42,6 +44,8 @@ class Config:
     fake_pointer: bool = False
     # Browser pages allowed to open the WebSocket. Tools without an Origin header are allowed.
     allowed_origins: tuple[str, ...] = DEFAULT_ORIGINS
+    # Where calibrations are saved (git-ignored; per machine and setup).
+    data_dir: Path = field(default=DEFAULT_DATA_DIR)
 
 
 def _int(name: str, raw: str, low: int, high: int) -> int:
@@ -81,15 +85,16 @@ def _from_env(env: Mapping[str, str]) -> dict[str, Any]:
         "CV_HEIGHT": ("height", lambda n, r: _int(n, r, 120, 4320)),
         "CV_FPS": ("fps", lambda n, r: _int(n, r, 1, 240)),
         "CV_FAKE_POINTER": ("fake_pointer", _bool),
+        "CV_DATA_DIR": ("data_dir", lambda n, r: Path(r.strip())),
         "CV_ALLOWED_ORIGINS": (
             "allowed_origins",
             lambda n, r: tuple(o.strip() for o in r.split(",") if o.strip()),
         ),
     }
     values: dict[str, Any] = {}
-    for env_name, (field, read) in readers.items():
+    for env_name, (attr, read) in readers.items():
         if env_name in env:
-            values[field] = read(env_name, env[env_name])
+            values[attr] = read(env_name, env[env_name])
     return values
 
 
@@ -124,13 +129,13 @@ def load_config(
         overrides["camera_enabled"] = False
 
     # Re-check numbers that came from the command line the same way as env values.
-    for field, name, low, high in (
+    for attr, name, low, high in (
         ("port", "--port", 1, 65535),
         ("camera_index", "--camera", 0, 31),
         ("width", "--width", 160, 7680),
         ("height", "--height", 120, 4320),
     ):
-        if field in overrides:
-            overrides[field] = _int(name, str(overrides[field]), low, high)
+        if attr in overrides:
+            overrides[attr] = _int(name, str(overrides[attr]), low, high)
 
     return replace(config, **overrides)
