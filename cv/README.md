@@ -4,9 +4,9 @@ The camera side of the projected whiteboard. One Python process owns the camera 
 publishes everything it sees as JSON events on a WebSocket that the web app listens to.
 See [`docs/02-technical-design.md`](../docs/02-technical-design.md) for the design.
 
-Status: **Phase 3**. Camera, event bus, fake finger, preview, debug page, manual and
-automatic (ArUco) calibration, hand tracking and the five agreed gestures work. Reading the
-board and drift detection come next.
+Status: **Phase 4**. Camera, event bus, fake finger, preview, debug page, manual and
+automatic (ArUco) calibration, hand tracking, the five agreed gestures and reading physical
+writing on the board work. Drift detection and automatic re-calibration come next.
 
 ## Setup
 
@@ -86,6 +86,37 @@ Do it after the projector, board and camera are fixed in place.
 The result is saved to `cv/data/calibration.json` (with a timestamped copy in
 `cv/data/history/`) and loaded again when the service starts. It is marked **stale** when
 the board page or camera image changes size: then calibrate again.
+
+## Reading the board (physical writing)
+
+Finds marker writing and printed sheets that are physically on the board, and gives the AI
+a straight-on picture of them. Needs a calibration (status `ok`).
+
+1. A page sends `read_board` (optionally with `bbox`, an area in board px).
+2. Board pages cover that area with plain white (hiding digital ink) and confirm with
+   `flash_shown`; the service waits a moment, takes the median of 5 frames, then removes the white.
+3. It straightens the area with the calibration, finds the writing (clearly darker than the
+   board around it; strokes close together become one region; specks are ignored), and sends
+   `content_regions` (where the writing is, so the UI keeps clear of it) and `content_capture`
+   (the straightened picture as a PNG data URL, for the AI to read).
+
+Try it on `/calibrate` → **Read the whole board**: it shows the picture with the writing
+outlined. The board page outlines the writing in orange too.
+
+```json
+{ "type": "read_board", "bbox": [0, 0, 700, 800] }
+{ "type": "flash", "run": 3, "color": "white", "bbox": [0, 0, 700, 800] }
+{ "type": "flash_shown", "run": 3 }
+{ "type": "flash", "run": null, "color": "white", "bbox": null }
+{ "type": "content_regions", "regions": [{ "id": "r1", "kind": "physical", "bbox": [146.2, 136.4, 428.9, 78.9] }] }
+{ "type": "content_capture", "image": "data:image/png;base64,...", "bbox": [0, 0, 700, 800], "regions": ["..."] }
+{ "type": "board_read", "status": "ok", "message": "Found 3 pieces of writing." }
+```
+
+`board_read.status` is `reading` (with the step), `ok` or `error` (with the reason, such as
+"Calibrate first"). Reading and calibrating take turns: both use the projector. Areas are
+cut to the board, and the white reaches 20 px past the area so calibration slack never
+pulls the board's frame into the picture. Board pages clear the white if they disconnect.
 
 ## Gestures (agreed with the team)
 
