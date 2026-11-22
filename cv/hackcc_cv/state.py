@@ -19,6 +19,7 @@ from .calibration import (
 from .camera import Camera
 from .config import Config
 from .events import DEFAULT_DISPLAY, Display, calibration_targets_event
+from .tracking import TrackingLoop
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class ServerState:
         self.bus = Bus()
         self.display: Display = DEFAULT_DISPLAY
         self.camera: Camera | None = None
+        self.tracking: TrackingLoop | None = None
         self.calibration = CalibrationStore()
         self.calibration_problem = ""  # set when the saved calibration could not be loaded
         self.save_problem = ""  # set when the calibration in use could not be saved
