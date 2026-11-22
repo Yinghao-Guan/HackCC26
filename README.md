@@ -24,14 +24,34 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 ## Whiteboard tools
 
+The board fills the whole screen. The tools are in the round button floating on it (see [Tool menu](#tool-menu-the-round-button) below).
+
 - **Pen**: draw with the mouse (or a finger or stylus).
 - **Eraser**: *Pixel* rubs out part of a stroke; *Stroke* removes a whole stroke or text box with one touch.
 - **Text**: click the board and type. Enter adds a line; Esc or clicking away finishes. Click text to edit it. Typed text is part of the board, so it can be erased, undone, and read by the AI.
 - **Move**: drag the board to move around. The mouse wheel or trackpad scrolls it too, and so does dragging with the middle mouse button. The board is endless; **Reset view** goes back to the start. **Solve** reads only what is on screen.
+- **Undo**: in the tool menu, or Ctrl+Z (Cmd+Z on a Mac). **Clear** empties the board, and can be undone too.
+
+### Tool menu (the round button)
+
+The round button floats on the board (bottom right at first), close to where you write. Tap it and eight buttons fan out around it: **Pen**, **Eraser**, **Text**, **Move**, **Undo**, **Board**, **Size** and **Color**. Tap a tool to use it and the menu closes.
+
+- **Size** opens a curved slider around the outside of the menu: drag along it (or tap anywhere on it) to set the size of the current pen, eraser or text, from smallest at the bottom to biggest at the top. The size shows in the middle as you drag.
+- **Color** opens an outer ring of five colors plus a rainbow swatch for any color. Picking a color switches to the pen (or keeps the text tool).
+- **Eraser**: tap once to pick it. Tap it again while it is picked to choose *Pixel* or *Stroke*.
+- **Undo** keeps the menu open, so you can tap it several times in a row.
+- **Board** opens **Clear** and **Reset view**.
+- Tap anywhere else on the board (or the × in the middle, or press Esc) to close the menu without drawing.
+- Drag the button to put it anywhere on the board. Near an edge, the open menu slides in just far enough to fit.
+- Keyboard: Enter opens it, the arrow keys move around a ring, Esc goes back. On the size slider the arrow keys change the size by 1 px, Page Up/Down by more, Home/End jump to the ends, and Enter closes the menu. The name of the button you point at shows in the middle.
+
+Each button is always in the same direction, so with use you can reach for it without looking (the idea behind marking menus, which work best with up to eight choices per ring). The menu follows the system's *reduce motion* setting. The code is in `src/components/whiteboard/RadialMenu.tsx`, with the geometry in `radialGeometry.ts`.
+
+> The side panel that used to sit on the right has been removed. Its **Solve**, **Graph**, **Check** and **Speak** buttons are moving to a separate AI menu that is still being built, so for now the features below have no button. Their code is still in place in `Whiteboard.tsx`.
 
 ## AI: Solve
 
-Write a math problem on the board and press **Solve** in the side panel. The board's ink is sent to the Claude API (through the route in `src/app/api/solve/`), which reads the handwriting and solves it. The reading, the steps and the answer are written on the board next to the problem. This needs `ANTHROPIC_API_KEY` in `.env.local` (git-ignored); restart `npm run dev` after changing it.
+Write a math problem on the board and press **Solve**. The board's ink is sent to the Claude API (through the route in `src/app/api/solve/`), which reads the handwriting and solves it. The reading, the steps and the answer are written on the board next to the problem. This needs `ANTHROPIC_API_KEY` in `.env.local` (git-ignored); restart `npm run dev` after changing it.
 
 ## AI: Graph
 
@@ -47,7 +67,7 @@ Write a problem and your worked steps, one step per line, and press **Check**. T
 
 ## Voice: talk to the board
 
-Tap **Speak** in the side panel and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in the panel as you say them. Short pauses mid-sentence are fine: it waits until the words have stopped for about 1.5 seconds, then runs the matching button on what is on screen. Tap the button again to stop early.
+Tap **Speak** and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in the panel as you say them. Short pauses mid-sentence are fine: it waits until the words have stopped for about 1.5 seconds, then runs the matching button on what is on screen. Tap the button again to stop early.
 
 You can also **ask a question**, such as "give me an example question on the chain rule" or "explain how to differentiate this". Anything you say that isn't one of the commands above (and is at least three words) goes to Claude through `src/app/api/ask/`. If something is written on screen, an image of it goes along, so "explain this step" works; with an empty board only the question is sent. The answer is written on the board as a card with the question, short explanations and formulas shown with KaTeX. Sentences that start with *how, why, explain, describe, define, tell me, give me* or *teach me* are always treated as questions, even if they contain a word like "solve" ("how do I solve a quadratic" explains; "solve this" solves).
 
@@ -81,7 +101,7 @@ src/app/api/solve/          Server route: reads the board image and solves it
 src/app/api/graph/          Server route: reads the board image and lists the curves or surfaces to graph
 src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
 src/app/api/ask/            Server route: answers a spoken question (with the board image, if there is writing)
-src/components/whiteboard/  Drawing canvas, stroke model, settings panel, voice input, answer, graph (2D and 3D) and check cards
+src/components/whiteboard/  Drawing canvas, stroke model, round tool menu, voice input, answer, graph (2D and 3D) and check cards
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```

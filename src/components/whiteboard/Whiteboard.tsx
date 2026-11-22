@@ -27,8 +27,8 @@ import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
 import { MistakeMark } from "./MistakeMark";
+import { RadialMenu } from "./RadialMenu";
 import { ReplyCard } from "./ReplyCard";
-import { SettingsPanel } from "./SettingsPanel";
 import { DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
 import type { Point, Stroke, StrokeDraft } from "./strokes";
 import { TEXT_LINE_HEIGHT } from "./text";
@@ -38,7 +38,7 @@ import { useSpeechRecognition } from "./useSpeechRecognition";
 
 const ORIGIN: Point = { x: 0, y: 0 };
 
-// What the panel says when a spoken command is understood.
+// What the voice status says when a spoken command is understood.
 const VOICE_REPLIES: Record<VoiceCommand, string> = {
   solve: "Solving what's on the board.",
   graph: "Graphing what's on the board.",
@@ -49,7 +49,12 @@ const VOICE_REPLIES: Record<VoiceCommand, string> = {
 // The check route accepts at most this many numbered lines.
 const MAX_CHECK_LINES = 60;
 
-/** The whole board: a drawing area on the left, a settings panel on the right. */
+/**
+ * The whole board: one full-screen drawing area, with the floating round tool menu on top.
+ *
+ * The AI actions (solve, graph, check, spoken questions) and voice input below are kept ready
+ * for the AI menu that is being built separately; no button calls them yet.
+ */
 export function Whiteboard() {
   const [settings, setSettings] = useState<WhiteboardSettings>(DEFAULT_SETTINGS);
   const [board, dispatch] = useReducer(boardReducer, INITIAL_BOARD);
@@ -488,24 +493,19 @@ export function Whiteboard() {
             }
           })}
         </div>
-      </main>
 
-      <SettingsPanel
-        settings={settings}
-        onSettingsChange={updateSettings}
-        canUndo={board.past.length > 0}
-        canClear={board.strokes.length > 0 || board.cards.length > 0}
-        canResetView={view.x !== 0 || view.y !== 0}
-        ai={ai}
-        voice={listening ? { state: "listening", heard: hearing } : voice}
-        onSolve={solve}
-        onGraph={graph}
-        onCheck={check}
-        onVoiceToggle={toggleVoice}
-        onUndo={undo}
-        onClear={clear}
-        onResetView={resetView}
-      />
+        {/* The floating round tool menu. It stays put on screen while the board scrolls. */}
+        <RadialMenu
+          settings={settings}
+          onSettingsChange={updateSettings}
+          canUndo={board.past.length > 0}
+          canClear={board.strokes.length > 0 || board.cards.length > 0}
+          canResetView={view.x !== 0 || view.y !== 0}
+          onUndo={undo}
+          onClear={clear}
+          onResetView={resetView}
+        />
+      </main>
     </div>
   );
 }
