@@ -1,4 +1,5 @@
-import { askAboutBoard, fail, readQuestionRequest } from "@/lib/claude";
+import { askAboutBoard } from "@/lib/ai";
+import { fail, readQuestionRequest } from "@/lib/claude";
 import { parseAskResult } from "@/lib/ask";
 
 const SYSTEM_PROMPT = `You are the AI teaching assistant on a classroom whiteboard. Someone just asked you a question out loud, and your answer is written on the board for everyone in the room to read.
@@ -44,6 +45,7 @@ export async function POST(request: Request) {
     instruction: `${
       image ? "The board is shown in the image." : "Nothing is written on the board right now."
     }\n\nQuestion (transcribed from speech): ${question}`,
+    accept: (value) => parseAskResult(value) !== null,
   });
   if (!reply.ok) return reply.response;
 

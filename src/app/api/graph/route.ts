@@ -1,4 +1,5 @@
-import { askAboutBoard, fail, readBoardRequest } from "@/lib/claude";
+import { askAboutBoard } from "@/lib/ai";
+import { fail, readBoardRequest } from "@/lib/claude";
 import { parseGraphResult } from "@/lib/graph";
 
 const SYSTEM_PROMPT = `You read handwritten math from a whiteboard and turn it into a graph.
@@ -104,6 +105,7 @@ export async function POST(request: Request) {
     schema: GRAPH_SCHEMA,
     image: input.value.image,
     instruction: "Read the equations in this image and list them to graph.",
+    accept: (value) => parseGraphResult(value) !== null,
   });
   if (!reply.ok) return reply.response;
 

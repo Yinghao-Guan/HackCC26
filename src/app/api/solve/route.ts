@@ -1,4 +1,5 @@
-import { askAboutBoard, fail, readBoardRequest } from "@/lib/claude";
+import { askAboutBoard } from "@/lib/ai";
+import { fail, readBoardRequest } from "@/lib/claude";
 import { parseSolveResult } from "@/lib/solve";
 
 const SYSTEM_PROMPT = `You read handwritten math from a whiteboard and solve it.
@@ -40,6 +41,7 @@ export async function POST(request: Request) {
     schema: SOLVE_SCHEMA,
     image: input.value.image,
     instruction: "Read the handwriting in this image and solve the problem.",
+    accept: (value) => parseSolveResult(value) !== null,
   });
   if (!reply.ok) return reply.response;
 

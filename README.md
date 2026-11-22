@@ -10,17 +10,19 @@ Project docs (overview, technical design, team roles, hardware, checklist) are i
 - Tailwind CSS v4
 - ESLint
 - npm
-- Claude API (`@anthropic-ai/sdk`) for reading handwriting and solving math, KaTeX for showing math
+- Gemini API (`@google/genai`) for reading handwriting and solving math, with the Claude API (`@anthropic-ai/sdk`) as the fallback; KaTeX for showing math
 
 ## Getting started
 
 ```bash
 npm install
-cp .env.example .env.local   # then put your Claude API key in .env.local
+cp .env.example .env.local   # then put your Gemini and/or Claude API key in .env.local
 npm run dev
 ```
 
 Then open [http://localhost:3000](http://localhost:3000).
+
+**Which AI.** Every AI action asks Gemini first (`GEMINI_API_KEY`, model `gemini-flash-latest` unless `GEMINI_MODEL` is set). If Gemini fails, times out or replies in a shape the route can't use, the same request goes to Claude (`ANTHROPIC_API_KEY`). `AI_PROVIDER=claude` asks Claude first, and a provider without a key is skipped. The server log says which one answered (`[ai] answered by ...`). The code is in `src/lib/ai.ts`, `gemini.ts` and `claude.ts`; below, "Claude" means whichever AI answers.
 
 ## Whiteboard
 

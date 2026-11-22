@@ -1,4 +1,5 @@
-import { askAboutBoard, fail, readBoardRequest } from "@/lib/claude";
+import { askAboutBoard } from "@/lib/ai";
+import { fail, readBoardRequest } from "@/lib/claude";
 import { parseCheckResult } from "@/lib/check";
 
 const MAX_LINES = 60;
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
     schema: CHECK_SCHEMA,
     image: input.value.image,
     instruction: `The writing has ${lineCount} numbered ${lineCount === 1 ? "line" : "lines"}. Check the work and find the first mistake.`,
+    accept: (value) => parseCheckResult(value, lineCount) !== null,
   });
   if (!reply.ok) return reply.response;
 

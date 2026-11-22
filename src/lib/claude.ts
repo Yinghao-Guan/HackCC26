@@ -1,5 +1,6 @@
-// Server-side helpers for the routes that show the board to Claude. Only import
-// this from route handlers: it needs ANTHROPIC_API_KEY, which must stay on the server.
+// Server-side helpers for the routes that show the board to the AI, and the Claude call.
+// Only import this from route handlers: it needs ANTHROPIC_API_KEY, which must stay on the
+// server. The routes go through askAboutBoard in ./ai, which tries Gemini first.
 
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -7,7 +8,7 @@ import Anthropic from "@anthropic-ai/sdk";
 // if the new model doesn't support it).
 const MODEL = "claude-opus-5-5";
 
-const DATA_URL_PREFIX = "data:image/png;base64,";
+export const DATA_URL_PREFIX = "data:image/png;base64,";
 const MAX_IMAGE_CHARS = 6_000_000; // the API accepts images up to 5 MB
 
 /** True for a PNG data URL of a size the API accepts. */
@@ -80,15 +81,17 @@ export async function readQuestionRequest(
   return { ok: true, value: { question, image } };
 }
 
-interface AskOptions {
-  /** Tells Claude what to do with the board. */
+export interface AskOptions {
+  /** Tells the AI what to do with the board. */
   system: string;
-  /** The JSON shape Claude must reply in. */
+  /** The JSON shape the AI must reply in. */
   schema: Record<string, unknown>;
   /** The board as an image, or null when there is nothing to show. */
   image: string | null;
   /** The short request sent along with the image. */
   instruction: string;
+  /** Whether a reply is usable (the route's own check); one that is not is asked of the other AI. */
+  accept?: (value: unknown) => boolean;
 }
 
 /**
@@ -96,7 +99,7 @@ interface AskOptions {
  * JSON is not checked here; the caller should validate it. On failure, this
  * gives an error response that is fine to send to the browser.
  */
-export async function askAboutBoard({
+export async function askClaude({
   system,
   schema,
   image,
