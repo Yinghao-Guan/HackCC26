@@ -21,22 +21,32 @@ import {
 } from "./ai";
 import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
+import { BusFeedback, type BusFeedbackHandle } from "./BusFeedback";
+import { CalibrationLayer, type Probe } from "./CalibrationLayer";
 import { CheckCard } from "./CheckCard";
-import { DrawingCanvas } from "./DrawingCanvas";
+import { useCvBus, type BusEvent, type Marker, type Target } from "./cvBus";
+import { CvStatus } from "./CvStatus";
+import { DrawingCanvas, type DrawingCanvasHandle } from "./DrawingCanvas";
 import { exportInk } from "./exportInk";
 import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
 import { MistakeMark } from "./MistakeMark";
+import { resetAllPlots3D } from "./plot3dControls";
 import { ReplyCard } from "./ReplyCard";
 import type { Point, StrokeDraft } from "./strokes";
+import { useBusInput } from "./useBusInput";
 import { useSpeechRecognition } from "./useSpeechRecognition";
 
 const ORIGIN: Point = { x: 0, y: 0 };
 
-// The board is drawn with a single, fixed pen: no tool or color picker.
+// The board is drawn with a single, fixed pen: no tool or color picker. A double tap in the
+// air (seen by the camera service) swaps it for an eraser that removes whole strokes.
 const PEN_COLOR = "#171717";
 const PEN_SIZE = 4;
+const ERASER_SIZE = 48;
+// A check cross from calibration stays this long.
+const PROBE_MS = 4000;
 
 // What the panel says when a spoken command is understood.
 const VOICE_REPLIES: Record<VoiceCommand, string> = {
@@ -60,6 +70,14 @@ export function Whiteboard() {
   // Which part of the (endless) board is on screen: the board point at the top-left corner.
   const [view, setView] = useState<Point>(ORIGIN);
   const boardRef = useRef<HTMLElement>(null);
+  const [tool, setTool] = useState<"pen" | "eraser">("pen");
+  const canvasRef = useRef<DrawingCanvasHandle>(null);
+  const feedbackRef = useRef<BusFeedbackHandle>(null);
+  // What the camera service asks the board to show while calibrating.
+  const [pattern, setPattern] = useState<{ run: number; markers: Marker[] } | null>(null);
+  const [targets, setTargets] = useState<Target[]>([]);
+  const [probes, setProbes] = useState<Probe[]>([]);
+  const probeKey = useRef(0);
 
   const addStroke = useCallback(
     (stroke: StrokeDraft) => dispatch({ type: "add", stroke }),
@@ -74,6 +92,21 @@ export function Whiteboard() {
   const pan = useCallback(
     (dx: number, dy: number) => setView((v) => ({ x: v.x + dx, y: v.y + dy })),
     [],
+  );
+
+  /** Back to the start: board position and every 3D angle. The writing stays as it is. */
+  const resetView = useCallback(() => {
+    setView(ORIGIN);
+    resetAllPlots3D();
+  }, []);
+
+  const chooseTool = useCallback((next: "pen" | "eraser") => {
+    setTool(next);
+    feedbackRef.current?.hint(next === "eraser" ? "Eraser" : "Pen", 1200);
+  }, []);
+  const toggleTool = useCallback(
+    () => chooseTool(tool === "eraser" ? "pen" : "eraser"),
+    [chooseTool, tool],
   );
 
   /** Scroll with the mouse wheel or a trackpad. */
@@ -316,6 +349,32 @@ export function Whiteboard() {
     }
   }, [listening, startListening, stopListening]);
 
+  // The camera service: a finger on the board, hand gestures, and calibration.
+  const handleBusInput = useBusInput({ canvas: canvasRef, feedback: feedbackRef, pan, toggleTool, resetView });
+  const handleBusEvent = useCallback(
+    (event: BusEvent) => {
+      if (event.type === "calibration_pattern") {
+        setPattern(event.markers.length > 0 ? { run: event.run, markers: event.markers } : null);
+      } else if (event.type === "calibration_targets") {
+        setTargets(event.targets);
+      } else if (event.type === "calibration_probe") {
+        const probe = { key: ++probeKey.current, x: event.x, y: event.y };
+        setProbes((current) => [...current, probe]);
+        setTimeout(() => setProbes((current) => current.filter((p) => p !== probe)), PROBE_MS);
+      } else {
+        handleBusInput(event);
+      }
+    },
+    [handleBusInput],
+  );
+  const { enabled: busEnabled, status: busStatus, send: busSend } = useCvBus(handleBusEvent);
+  const showPatternDone = useCallback(
+    (run: number) => busSend({ type: "calibration_pattern_shown", run }),
+    [busSend],
+  );
+  // Calibration needs the board clear, so the controls step aside while it shows things.
+  const calibrating = pattern !== null || targets.length > 0;
+
   // Ctrl/Cmd+Z undoes the last change to the board.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -344,11 +403,12 @@ export function Whiteboard() {
         }}
       >
         <DrawingCanvas
+          ref={canvasRef}
           strokes={board.strokes}
-          tool="pen"
-          eraserMode="pixel"
+          tool={tool}
+          eraserMode="stroke"
           color={PEN_COLOR}
-          size={PEN_SIZE}
+          size={tool === "eraser" ? ERASER_SIZE : PEN_SIZE}
           view={view}
           hiddenId={null}
           onStrokeComplete={addStroke}
@@ -385,14 +445,31 @@ export function Whiteboard() {
         </div>
       </main>
 
-      <ActionDial
-        ai={ai}
-        voice={listening ? { state: "listening", heard: hearing } : voice}
-        onSolve={solve}
-        onGraph={graph}
-        onCheck={check}
-        onVoiceToggle={toggleVoice}
-      />
+      {!calibrating && (
+        <ActionDial
+          ai={ai}
+          voice={listening ? { state: "listening", heard: hearing } : voice}
+          onSolve={solve}
+          onGraph={graph}
+          onCheck={check}
+          onVoiceToggle={toggleVoice}
+        />
+      )}
+
+      {tool === "eraser" && !calibrating && (
+        // Also the way back to the pen when the double tap doesn't work.
+        <button
+          type="button"
+          onClick={() => chooseTool("pen")}
+          className="fixed right-4 top-4 z-30 rounded-full border border-neutral-300 bg-white/95 px-4 py-2 text-sm font-medium text-neutral-800 shadow-md transition-colors hover:bg-neutral-100"
+        >
+          Eraser on · tap for pen
+        </button>
+      )}
+
+      {busEnabled && !calibrating && <CvStatus status={busStatus} />}
+      <BusFeedback ref={feedbackRef} />
+      <CalibrationLayer pattern={pattern} targets={targets} probes={probes} onPatternShown={showPatternDone} />
     </div>
   );
 }
