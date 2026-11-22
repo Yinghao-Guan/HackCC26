@@ -42,6 +42,8 @@ class Config:
     warmup_seconds: float = 1.0
     # Publish a made-up finger so the UI and AI roles can work without a camera.
     fake_pointer: bool = False
+    # Hand tracking and gestures (needs the camera and the hand model).
+    gestures: bool = True
     # Browser pages allowed to open the WebSocket. Tools without an Origin header are allowed.
     allowed_origins: tuple[str, ...] = DEFAULT_ORIGINS
     # Where calibrations are saved (git-ignored; per machine and setup).
@@ -85,6 +87,7 @@ def _from_env(env: Mapping[str, str]) -> dict[str, Any]:
         "CV_HEIGHT": ("height", lambda n, r: _int(n, r, 120, 4320)),
         "CV_FPS": ("fps", lambda n, r: _int(n, r, 1, 240)),
         "CV_FAKE_POINTER": ("fake_pointer", _bool),
+        "CV_GESTURES": ("gestures", _bool),
         "CV_DATA_DIR": ("data_dir", lambda n, r: Path(r.strip())),
         "CV_ALLOWED_ORIGINS": (
             "allowed_origins",
@@ -108,6 +111,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--height", type=int)
     parser.add_argument("--fake", action="store_true", help="publish a fake finger")
     parser.add_argument("--no-camera", action="store_true", help="run without opening a camera")
+    parser.add_argument("--no-gestures", action="store_true", help="no hand tracking or gestures")
     return parser
 
 
@@ -121,12 +125,14 @@ def load_config(
     overrides: dict[str, Any] = {
         key: value
         for key, value in vars(args).items()
-        if key not in ("fake", "no_camera") and value is not None
+        if key not in ("fake", "no_camera", "no_gestures") and value is not None
     }
     if args.fake:
         overrides["fake_pointer"] = True
     if args.no_camera:
         overrides["camera_enabled"] = False
+    if args.no_gestures:
+        overrides["gestures"] = False
 
     # Re-check numbers that came from the command line the same way as env values.
     for attr, name, low, high in (
