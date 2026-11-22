@@ -8,6 +8,7 @@ import type { GraphPoint, GraphSurface, GraphWindow3D } from "@/lib/graph";
 import { formatTick, niceStep, tickValues } from "@/lib/plot";
 import { surfaceMesh } from "@/lib/surface";
 import { CURVE_COLORS } from "./FunctionPlot";
+import { registerPlot3D } from "./plot3dControls";
 
 interface Plot3DProps {
   surfaces: GraphSurface[];
@@ -235,7 +236,33 @@ export default function Plot3D({ surfaces, points, box, size }: Plot3DProps) {
       },
     };
 
+    // Let hand gestures turn and zoom this view too (see plot3dControls.ts).
+    const unregister = registerPlot3D({
+      element: host.parentElement ?? host,
+      rotate: (dx, dy) => {
+        // The same turn a mouse drag of (dx, dy) pixels gives.
+        const offset = camera.position.clone().sub(controls.target);
+        const spherical = new THREE.Spherical().setFromVector3(offset);
+        spherical.theta -= (2 * Math.PI * dx) / size;
+        spherical.phi = clamp(spherical.phi - (2 * Math.PI * dy) / size, 0.05, Math.PI - 0.05);
+        offset.setFromSpherical(spherical);
+        camera.position.copy(controls.target).add(offset);
+        controls.update();
+        render();
+      },
+      distance: () => camera.position.distanceTo(controls.target),
+      setDistance: (distance) => {
+        const kept = clamp(distance, controls.minDistance, controls.maxDistance);
+        const direction = camera.position.clone().sub(controls.target).normalize();
+        camera.position.copy(controls.target).add(direction.multiplyScalar(kept));
+        controls.update();
+        render();
+      },
+      reset: () => actions.current.reset(),
+    });
+
     return () => {
+      unregister();
       controls.removeEventListener("change", render);
       controls.dispose();
       for (const item of disposables) item.dispose();
@@ -247,7 +274,7 @@ export default function Plot3D({ surfaces, points, box, size }: Plot3DProps) {
 
   return (
     // data-no-pan: scrolling over the 3D view zooms it instead of scrolling the board.
-    <div data-no-pan className="relative" style={{ width: size, height: size }}>
+    <div data-no-pan data-plot3d className="relative" style={{ width: size, height: size }}>
       <div
         ref={hostRef}
         className="overflow-hidden rounded-lg border border-neutral-200 bg-white"

@@ -3,9 +3,11 @@
 import {
   useCallback,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   type PointerEvent as ReactPointerEvent,
+  type Ref,
 } from "react";
 import type { EraserMode, Tool } from "./settings";
 import {
@@ -18,7 +20,20 @@ import {
   type StrokeDraft,
 } from "./strokes";
 
+/**
+ * Touches that don't come from the browser, such as a finger the camera service sees on the
+ * board. Points are in CSS pixels relative to the canvas, like a mouse event's.
+ */
+export interface DrawingCanvasHandle {
+  /** The canvas, to tell whether a point on the screen is over the board. */
+  element(): HTMLCanvasElement | null;
+  touchStart(id: number, at: Point): void;
+  touchMove(id: number, at: Point): void;
+  touchEnd(id: number): void;
+}
+
 interface DrawingCanvasProps {
+  ref?: Ref<DrawingCanvasHandle>;
   /** Finished marks (strokes and text), oldest first. */
   strokes: Stroke[];
   /** Style applied to the next gesture. */
@@ -45,6 +60,9 @@ type Gesture =
   | { kind: "erase"; pointerId: number; last: Point; erased: Set<number> }
   | { kind: "pan"; pointerId: number; lastX: number; lastY: number };
 
+// Browser pointer ids are never negative, so touches from outside use negative ids.
+const outsideId = (id: number) => -1 - id;
+
 /** Where a pointer event is on the screen, relative to the canvas. */
 function screenPoint(
   canvas: HTMLCanvasElement,
@@ -54,17 +72,8 @@ function screenPoint(
   return { x: event.clientX - rect.left, y: event.clientY - rect.top };
 }
 
-/** Where a pointer event is on the board, which may be scrolled. */
-function boardPoint(
-  canvas: HTMLCanvasElement,
-  event: { clientX: number; clientY: number },
-  view: Point,
-): Point {
-  const p = screenPoint(canvas, event);
-  return { x: p.x + view.x, y: p.y + view.y };
-}
-
 export function DrawingCanvas({
+  ref,
   strokes,
   tool,
   eraserMode,
@@ -148,6 +157,11 @@ export function DrawingCanvas({
     if (cursor) cursor.style.visibility = "hidden";
   };
 
+  const toBoard = (screen: Point): Point => ({
+    x: screen.x + viewRef.current.x,
+    y: screen.y + viewRef.current.y,
+  });
+
   /**
    * Remove every pen stroke and piece of text the eraser circle touches while
    * moving from the gesture's last point to `to`. Returns true if anything new
@@ -183,6 +197,74 @@ export function DrawingCanvas({
     return changed;
   };
 
+  /** Start drawing or erasing (with the pen or eraser) at a point on the screen. */
+  const beginMark = (pointerId: number, screen: Point) => {
+    const point = toBoard(screen);
+
+    if (tool === "eraser" && eraserMode === "stroke") {
+      const gesture: Gesture = { kind: "erase", pointerId, last: point, erased: new Set() };
+      gestureRef.current = gesture;
+      if (eraseAlong(gesture, point, size / 2)) redraw();
+      return;
+    }
+
+    const stroke: StrokeDraft = { tool: tool === "eraser" ? "eraser" : "pen", color, size, points: [point] };
+    gestureRef.current = { kind: "draw", pointerId, stroke };
+    const ctx = canvasRef.current?.getContext("2d");
+    if (ctx) paintStrokeTail(ctx, stroke);
+  };
+
+  /** Carry a stroke or an erase on through these points on the screen. */
+  const continueMark = (gesture: Gesture, screens: Point[]) => {
+    if (gesture.kind === "draw") {
+      const ctx = canvasRef.current?.getContext("2d");
+      for (const screen of screens) {
+        gesture.stroke.points.push(toBoard(screen));
+        if (ctx) paintStrokeTail(ctx, gesture.stroke);
+      }
+    } else if (gesture.kind === "erase") {
+      let changed = false;
+      for (const screen of screens) {
+        if (eraseAlong(gesture, toBoard(screen), size / 2)) changed = true;
+      }
+      if (changed) redraw();
+    }
+  };
+
+  /** End the gesture of this pointer, keeping what it drew or erased. */
+  const endGesture = (pointerId: number): Gesture | null => {
+    const gesture = gestureRef.current;
+    if (!gesture || gesture.pointerId !== pointerId) return null;
+
+    gestureRef.current = null;
+    if (gesture.kind === "draw") {
+      onStrokeComplete(gesture.stroke);
+    } else if (gesture.kind === "erase" && gesture.erased.size > 0) {
+      onStrokesErase([...gesture.erased]);
+    }
+    return gesture;
+  };
+
+  // Touches from outside the browser go through the same drawing and erasing as the mouse.
+  useImperativeHandle(ref, () => ({
+    element: () => canvasRef.current,
+    touchStart: (id, at) => {
+      if (gestureRef.current) return; // one gesture at a time
+      if (tool !== "pen" && tool !== "eraser") return;
+      if (tool === "eraser") moveEraserCursor(at);
+      beginMark(outsideId(id), at);
+    },
+    touchMove: (id, at) => {
+      if (tool === "eraser") moveEraserCursor(at);
+      const gesture = gestureRef.current;
+      if (gesture && gesture.pointerId === outsideId(id)) continueMark(gesture, [at]);
+    },
+    touchEnd: (id) => {
+      endGesture(outsideId(id));
+      hideEraserCursor();
+    },
+  }));
+
   const handlePointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
     if (gestureRef.current) return; // one gesture at a time
 
@@ -205,34 +287,16 @@ export function DrawingCanvas({
       return;
     }
 
-    const point = boardPoint(canvas, e, viewRef.current);
-
     if (tool === "text") {
       // Don't let this click move focus away from the text box it opens.
       e.preventDefault();
+      const point = toBoard(screenPoint(canvas, e));
       onTextClick(point, findTextAt(strokesRef.current, point));
       return;
     }
 
     canvas.setPointerCapture(e.pointerId);
-
-    if (tool === "eraser" && eraserMode === "stroke") {
-      const gesture: Gesture = {
-        kind: "erase",
-        pointerId: e.pointerId,
-        last: point,
-        erased: new Set(),
-      };
-      gestureRef.current = gesture;
-      if (eraseAlong(gesture, point, size / 2)) redraw();
-      return;
-    }
-
-    const stroke: StrokeDraft = { tool, color, size, points: [point] };
-    gestureRef.current = { kind: "draw", pointerId: e.pointerId, stroke };
-
-    const ctx = canvas.getContext("2d");
-    if (ctx) paintStrokeTail(ctx, stroke);
+    beginMark(e.pointerId, screenPoint(canvas, e));
   };
 
   const handlePointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -254,37 +318,12 @@ export function DrawingCanvas({
     // strokes stay smooth.
     const coalesced = e.nativeEvent.getCoalescedEvents?.() ?? [];
     const samples = coalesced.length > 0 ? coalesced : [e.nativeEvent];
-    const currentView = viewRef.current;
-
-    if (gesture.kind === "draw") {
-      const ctx = canvas.getContext("2d");
-      for (const sample of samples) {
-        gesture.stroke.points.push(boardPoint(canvas, sample, currentView));
-        if (ctx) paintStrokeTail(ctx, gesture.stroke);
-      }
-    } else {
-      let changed = false;
-      for (const sample of samples) {
-        if (eraseAlong(gesture, boardPoint(canvas, sample, currentView), size / 2)) {
-          changed = true;
-        }
-      }
-      if (changed) redraw();
-    }
+    continueMark(gesture, samples.map((sample) => screenPoint(canvas, sample)));
   };
 
   const finishGesture = (e: ReactPointerEvent<HTMLCanvasElement>) => {
-    const gesture = gestureRef.current;
-    if (!gesture || gesture.pointerId !== e.pointerId) return;
-
-    gestureRef.current = null;
-    if (gesture.kind === "draw") {
-      onStrokeComplete(gesture.stroke);
-    } else if (gesture.kind === "erase" && gesture.erased.size > 0) {
-      onStrokesErase([...gesture.erased]);
-    } else if (gesture.kind === "pan") {
-      e.currentTarget.style.cursor = ""; // back to the tool's own cursor
-    }
+    const gesture = endGesture(e.pointerId);
+    if (gesture?.kind === "pan") e.currentTarget.style.cursor = ""; // back to the tool's own cursor
 
     // A finger has no hover, so the circle should not linger after a touch.
     if (e.pointerType === "touch") hideEraserCursor();

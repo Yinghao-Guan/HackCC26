@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The camera service's Python environment: its packages ship their own JavaScript.
+    "cv/.venv/**",
   ]),
 ]);
 
