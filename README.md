@@ -45,6 +45,18 @@ If an equation uses `z`, **Graph** shows a 3D view instead: surfaces such as `z 
 
 Write a problem and your worked steps, one step per line, and press **Check**. The board's ink is split into lines on your machine and sent to Claude (through `src/app/api/check/`) with a red number beside each line. Claude finds the **first** step that does not follow, says why, shows how that line should read, carries on to the right answer, and the wrong line is circled on the board with a **Step N** tag. If all the steps are right, it says so instead. Because the line numbers come from our own line-splitting, the circle always lands on the line Claude meant. Leave a little space between lines so they can be told apart.
 
+## Camera test (groundwork for shadow touch)
+
+Open [http://localhost:3000/camera-test](http://localhost:3000/camera-test) on the laptop while the whiteboard (`/`) is on the projector. It is for trying a camera setup before the shadow touch detection is built on it:
+
+- **Camera**: pick any camera the browser can see, including a phone camera app that shows up as a webcam (such as Camo Studio). Choose the resolution, and mirror the picture if needed. The page remembers the last camera you used.
+- **Hand tracking**: [MediaPipe](https://ai.google.dev/edge/mediapipe) finds the hand and draws it on the picture, in the browser, so camera frames never leave the computer. It shows the index fingertip, frames per second, model time per frame, the share of frames with no hand, and fingertip jitter, so camera angles can be compared with numbers. The hand model (about 8 MB) and the library's WebAssembly files are downloaded from Google's model storage and the jsDelivr CDN each time the page loads, so it needs the internet.
+- **Writing pose**: writing is only to be allowed when only the index finger is out (👆), so the pinch gesture and other hand shapes can never draw. `src/components/camera/pose.ts` measures how far each fingertip is from its knuckle in the picture, in hand sizes, and says the hand is in the pose when the index finger reaches far and the middle, ring and little fingers reach much less. It uses the picture, not the model's 3D guess, because writing is done with the back of the hand to the camera, where the curled fingers are hidden and the 3D guess for them is unreliable. The fingertip ring turns green in the pose and red out of it, and a slider sets how short the other fingers must be. The threshold has not been tuned on a real camera yet.
+- **Shadow touch**: whether the fingertip touches the board, from its shadow. The projector lights the board, so the hand casts a shadow; the higher the finger, the farther the shadow is from the fingertip, and at contact they meet. Press **Capture empty board** with your hand away to take a reference picture, then `src/components/camera/shadowTouch.ts` marks every pixel clearly darker than the reference (and outside the hand's outline) as shadow. It then finds the tip of the fingertip's own shadow, the shadow that reaches farthest ahead along the finger inside a box laid along it, and measures the gap from the fingertip to that shadow tip, in hand sizes so it means the same near and far. (The nearest shadow of any kind does not work: the shadow of the arm and the rest of the hand lies close to the fingertip even when the finger is high.) The page paints the shadow it found cyan, draws the box and a line to the shadow tip, and plots the gap over the last 6 seconds next to the touch thresholds. **Save touching snapshot** and **Save hovering snapshot** save the camera picture, the empty board and the hand's landmarks as a JSON file in the Downloads folder, so the detection can be tuned on real frames. A touch needs the gap below a threshold for two frames in a row, with a higher threshold for letting go. **Writing** is shown only when the hand is in the 👆 pose *and* touching. The thresholds have not been tuned on a real camera yet. Projected ink is as dark as a shadow, so it would count as shadow if it appeared after the reference was taken.
+- **Brightness probe**: hover over the picture to read the brightness under the pointer, click to pin a spot, and read the difference between the board and the finger's shadow. Dark areas can be painted red above a brightness you choose.
+
+The pose check and the shadow touch are not connected to the whiteboard yet: the whiteboard still takes mouse input only.
+
 ## Scripts
 
 | Command | What it does |
@@ -61,7 +73,9 @@ src/app/                    App Router: layout, pages, global styles
 src/app/api/solve/          Server route: reads the board image and solves it
 src/app/api/graph/          Server route: reads the board image and lists the curves or surfaces to graph
 src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
+src/app/camera-test/        Page for trying a camera setup
 src/components/whiteboard/  Drawing canvas, stroke model, settings panel, answer, graph (2D and 3D) and check cards
+src/components/camera/      Camera test page, hand tracking, writing pose, brightness and stability measurements
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```
