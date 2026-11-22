@@ -42,6 +42,17 @@ def test_forced_announcements_still_go_out_during_a_calibration():
     assert [e["status"] for e in sent] == ["none"]
 
 
+def test_a_calibration_without_printed_markers_says_moves_wont_be_noticed():
+    from tests.test_calibration import make_calibration
+
+    state, _ = make_state()
+    state.display = __import__("hackcc_cv.events", fromlist=["Display"]).Display(1707, 1067, 1.5)
+    state.calibration.set(make_calibration())  # no printed markers recorded
+    event = state.calibration_event()
+    assert event["status"] == "ok"
+    assert "printed markers" in event["message"]
+
+
 def test_status_is_announced_once_and_not_repeated():
     async def scenario():
         state, recorder = make_state()
