@@ -6,7 +6,6 @@ import {
   useId,
   useRef,
   useState,
-  useSyncExternalStore,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -29,15 +28,12 @@ import {
   arcFraction,
   arcPath,
   DISC_RADIUS,
-  fitCenter,
   HUB_SIZE,
   ITEM_SIZE,
   MAIN_ANGLES,
   MAIN_ORDER,
   menuExtent,
-  placeAt,
   previewDiameter,
-  restPoint,
   RING_RADIUS,
   SIZE_ARC,
   sizeAtFraction,
@@ -47,11 +43,24 @@ import {
   SUB_RING_RADIUS,
   subAngles,
   taperedArcPath,
-  type BoardSize,
   type ButtonRing,
   type MainItem,
   type SubMenu,
 } from "./radialGeometry";
+import {
+  EASE_IN,
+  focusRing,
+  GLIDE,
+  hubSwap,
+  itemClass,
+  MenuDisc,
+  Orbit,
+  polarTransform,
+  RadialFrame,
+  SPRING,
+  useFloatingHub,
+  usePrefersReducedMotion,
+} from "./radialKit";
 import {
   COLORS,
   SIZE_LIMITS,
@@ -61,7 +70,6 @@ import {
   type Tool,
   type WhiteboardSettings,
 } from "./settings";
-import type { Point } from "./strokes";
 import { TEXT_FONT_FAMILY } from "./text";
 
 interface RadialMenuProps {
@@ -121,17 +129,6 @@ const SUB_SPANS: Record<SubMenu, readonly [number, number]> = {
 };
 const SUB_MENUS: SubMenu[] = ["eraser", "board", "size", "color"];
 
-/** A press that moves less than this is a tap, not a drag. */
-const DRAG_THRESHOLD = 6;
-
-// Motion. Opening overshoots a little, like a spring, and items follow each other around the
-// ring; closing is quicker and plain.
-const SPRING = "cubic-bezier(0.34, 1.5, 0.64, 1)";
-const EASE_IN = "cubic-bezier(0.4, 0, 1, 1)";
-const GLIDE = "cubic-bezier(0.2, 0.8, 0.2, 1)";
-const STAGGER_OPEN_MS = 22;
-const STAGGER_CLOSE_MS = 12;
-
 // The bands behind the outer rings, and the size slider, are drawn in SVGs centered on the menu.
 const BAND_BOX = 2 * (SUB_RING_RADIUS + SUB_BAND_WIDTH);
 const BAND_CENTER = BAND_BOX / 2;
@@ -157,109 +154,6 @@ const TRACK_PATH = taperedArcPath(
   trackHalfWidth,
 );
 const THUMB_SIZE = 44;
-
-const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-
-function subscribeReducedMotion(onChange: () => void) {
-  const query = window.matchMedia(REDUCED_MOTION);
-  query.addEventListener("change", onChange);
-  return () => query.removeEventListener("change", onChange);
-}
-
-/** True if the system asks for less motion; the menu then opens and closes without animating. */
-function usePrefersReducedMotion(): boolean {
-  return useSyncExternalStore(
-    subscribeReducedMotion,
-    () => window.matchMedia(REDUCED_MOTION).matches,
-    () => false,
-  );
-}
-
-/**
- * Put an element's center at `radius` from the menu's center, in direction `angle`. Written as
- * rotate → move out → rotate back so a transition between two of these swings the element along
- * a curve around the center instead of a straight line.
- */
-function polarTransform(angle: number, radius: number, scale: number): string {
-  return `translate(-50%, -50%) rotate(${angle}deg) translateX(${radius}px) rotate(${-angle}deg) scale(${scale})`;
-}
-
-interface OrbitProps {
-  shown: boolean;
-  /** Where the item sits while shown. */
-  angle: number;
-  radius: number;
-  /** Where it tucks away to while hidden (and grows out of when shown). */
-  fromAngle: number;
-  fromRadius: number;
-  size: number;
-  /** Its place in the ring, for the stagger. */
-  index: number;
-  count: number;
-  reducedMotion: boolean;
-  children: ReactNode;
-}
-
-/** Holds one menu item and moves it between its tucked-away spot and its place on a ring. */
-function Orbit({
-  shown,
-  angle,
-  radius,
-  fromAngle,
-  fromRadius,
-  size,
-  index,
-  count,
-  reducedMotion,
-  children,
-}: OrbitProps) {
-  const delay = shown ? index * STAGGER_OPEN_MS : (count - 1 - index) * STAGGER_CLOSE_MS;
-  return (
-    <div
-      role="none"
-      className="absolute left-0 top-0"
-      style={{
-        width: size,
-        height: size,
-        transform: shown
-          ? polarTransform(angle, radius, 1)
-          : polarTransform(fromAngle, fromRadius, 0.4),
-        opacity: shown ? 1 : 0,
-        transition: reducedMotion
-          ? "none"
-          : shown
-            ? `transform 360ms ${SPRING} ${delay}ms, opacity 160ms ease-out ${delay}ms`
-            : `transform 180ms ${EASE_IN} ${delay}ms, opacity 150ms ease-in ${delay}ms`,
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-const focusRing =
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neutral-900";
-
-/**
- * A round menu button. `look`: "selected" is the current tool (filled), "open" is an item whose
- * outer ring is showing (pressed in), "chosen" is the current value on an outer ring (outlined),
- * "danger" is Clear.
- */
-function itemClass(
-  shown: boolean,
-  look: "plain" | "selected" | "open" | "chosen" | "danger",
-): string {
-  const looks = {
-    plain: "bg-white text-neutral-800 ring-1 ring-black/10 hover:bg-neutral-50",
-    selected: "bg-neutral-900 text-white ring-1 ring-neutral-900",
-    open: "bg-neutral-200 text-neutral-900 ring-1 ring-black/15",
-    chosen: "bg-white text-neutral-900 ring-[2.5px] ring-neutral-900",
-    danger: "bg-white text-red-600 ring-1 ring-red-200 hover:bg-red-50",
-  };
-  return `flex size-full flex-col items-center justify-center gap-0.5 rounded-full shadow-md transition-[scale,background-color,color,box-shadow] duration-150 hover:scale-110 active:scale-95 disabled:opacity-40 disabled:hover:scale-100 ${focusRing} ${
-    shown ? "pointer-events-auto" : "pointer-events-none"
-  } ${looks[look]}`;
-}
 
 /** A dot (or letter) that shows how big a size is. */
 function SizePreview({
@@ -297,21 +191,12 @@ function SizePreview({
   );
 }
 
-/** A press on the hub that may turn into a drag. */
-interface HubDrag {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  from: Point;
-  moved: boolean;
-}
-
 /**
- * A floating round button on the board. Tap it and eight buttons fan out around it in a circle:
- * pen, eraser, text and move, undo, board actions (clear, reset view), size and color. Some open
- * an outer ring: color swatches, a curved size slider, eraser types or the board actions. It can
- * be dragged anywhere on the board; when it is near an edge, the open menu slides in just far
- * enough to fit.
+ * The tool menu: a floating round button on the board. Tap it and eight buttons fan out around
+ * it in a circle: pen, eraser, text and move, undo, board actions (clear, reset view), size and
+ * color. Some open an outer ring: color swatches, a curved size slider, eraser types or the
+ * board actions. It can be dragged anywhere on the board; when it is near an edge, the open menu
+ * slides in just far enough to fit.
  */
 export function RadialMenu({
   settings,
@@ -331,21 +216,14 @@ export function RadialMenu({
   const [sub, setSub] = useState<SubMenu | null>(null);
   // The name of the item under the pointer (or focused), shown in the hub.
   const [hint, setHint] = useState<string | null>(null);
-  const [board, setBoard] = useState<BoardSize | null>(null);
-  // Where the hub rests, as fractions of the room it can move in. Starts at the bottom right.
-  const [place, setPlace] = useState<Point>({ x: 1, y: 1 });
-  const [dragging, setDragging] = useState(false);
   // True while the size slider is being dragged.
   const [sliding, setSliding] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
   const menuId = useId();
 
-  const rootRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const hubRef = useRef<HTMLButtonElement>(null);
-  const dragRef = useRef<HubDrag | null>(null);
   const slidePointerRef = useRef<number | null>(null);
-  const ignoreClickRef = useRef(false);
   // Set when a ring is opened from the keyboard, so focus moves into it once it is showing.
   const focusRingRef = useRef<"main" | SubMenu | null>(null);
 
@@ -356,19 +234,12 @@ export function RadialMenu({
     (sub === "size" && !sizedTool) || (sub === "board" && !boardHasActions) ? null : sub;
   const sizeShown = open && activeSub === "size";
 
-  // Track the board's size, to keep the hub and the open menu on it.
-  useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    const observer = new ResizeObserver(([entry]) => {
-      const { width, height } = entry.contentRect;
-      setBoard((prev) =>
-        prev && prev.width === width && prev.height === height ? prev : { width, height },
-      );
-    });
-    observer.observe(root);
-    return () => observer.disconnect();
-  }, []);
+  // The hub starts at the bottom right.
+  const hub = useFloatingHub({
+    initialPlace: { x: 1, y: 1 },
+    open,
+    extent: menuExtent(DISC_RADIUS, activeSub ? SUB_SPANS[activeSub] : null),
+  });
 
   // A ring opened from the keyboard: focus its current value, or else its first item.
   useEffect(() => {
@@ -529,80 +400,9 @@ export function RadialMenu({
     onBlur: () => setHint((current) => (current === label ? null : current)),
   });
 
-  // Arrow keys move around the ring that has focus.
-  const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    const step =
-      e.key === "ArrowRight" || e.key === "ArrowDown"
-        ? 1
-        : e.key === "ArrowLeft" || e.key === "ArrowUp"
-          ? -1
-          : 0;
-    const target = e.target;
-    if (step === 0 || !(target instanceof HTMLElement)) return;
-    const ring = target.closest("[data-ring]");
-    if (!ring) return;
-    const items = Array.from(ring.querySelectorAll<HTMLElement>("[data-item]")).filter(
-      (item) => !item.matches(":disabled"),
-    );
-    const index = items.indexOf(target);
-    if (index === -1) return;
-    e.preventDefault();
-    items[(index + step + items.length) % items.length].focus();
-  };
-
-  const rest = board ? restPoint(place, board) : { x: 0, y: 0 };
-  const center =
-    board && open
-      ? fitCenter(rest, menuExtent(activeSub ? SUB_SPANS[activeSub] : null), board)
-      : rest;
-
-  // The hub: a tap opens or closes the menu, a drag moves it.
-  const handleHubPointerDown = (e: ReactPointerEvent<HTMLButtonElement>) => {
-    ignoreClickRef.current = false;
-    if (open || !board || e.button !== 0) return;
-    e.currentTarget.setPointerCapture(e.pointerId);
-    dragRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      from: rest,
-      moved: false,
-    };
-  };
-
-  const handleHubPointerMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId || !board) return;
-    const dx = e.clientX - drag.startX;
-    const dy = e.clientY - drag.startY;
-    if (!drag.moved) {
-      if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-      drag.moved = true;
-      setDragging(true);
-    }
-    setPlace(placeAt({ x: drag.from.x + dx, y: drag.from.y + dy }, board));
-  };
-
-  const finishHubPress = (e: ReactPointerEvent<HTMLButtonElement>, cancelled: boolean) => {
-    const drag = dragRef.current;
-    if (!drag || drag.pointerId !== e.pointerId) return;
-    dragRef.current = null;
-    if (!drag.moved) return;
-    setDragging(false);
-    if (cancelled || !board) return;
-    // Land exactly where the pointer was let go; the last move event can fall a little short.
-    setPlace(
-      placeAt({ x: drag.from.x + e.clientX - drag.startX, y: drag.from.y + e.clientY - drag.startY }, board),
-    );
-    // The click that follows the end of a drag must not toggle the menu.
-    ignoreClickRef.current = true;
-  };
-
+  // A tap on the hub opens or closes the menu; a drag moves it.
   const handleHubClick = (e: ReactMouseEvent<HTMLButtonElement>) => {
-    if (ignoreClickRef.current) {
-      ignoreClickRef.current = false;
-      return;
-    }
+    if (hub.clickEndsDrag()) return;
     if (open) {
       close();
       return;
@@ -626,13 +426,6 @@ export function RadialMenu({
   // While the size slider is out, the hub shows the size as it changes.
   const showSizeReadout = sizeShown && sizedTool !== null;
   const showHint = open && !showSizeReadout && hint !== null;
-
-  /** The tool icon and the close icon in the hub swap with a quarter turn. */
-  const swap = (shown: boolean, turn: number): CSSProperties => ({
-    opacity: shown ? 1 : 0,
-    transform: shown ? "rotate(0deg) scale(1)" : `rotate(${turn}deg) scale(0.6)`,
-    transition: reducedMotion ? "none" : `opacity 160ms ease-out, transform 280ms ${SPRING}`,
-  });
 
   const mainOrbit = (item: MainItem, index: number) => ({
     shown: open,
@@ -823,407 +616,363 @@ export function RadialMenu({
   );
 
   return (
-    <div
-      ref={rootRef}
-      className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
-      // Hidden until the board has been measured, so it doesn't flash in the wrong corner.
-      style={{ visibility: board ? undefined : "hidden" }}
+    <RadialFrame
+      hub={hub}
+      open={open}
+      onClose={close}
+      reducedMotion={reducedMotion}
+      anchorRef={menuRef}
     >
-      {/* While open, a tap anywhere else on the board just closes the menu (it doesn't draw). */}
-      {open && (
-        <div
-          aria-hidden="true"
-          className="pointer-events-auto absolute inset-0"
-          onPointerDown={(e) => {
-            e.preventDefault();
-            close();
-          }}
-        />
-      )}
+      <MenuDisc open={open} radius={DISC_RADIUS} reducedMotion={reducedMotion} />
 
-      {/*
-        The menu's center. It sits where the hub rests, and while open it slides (via the
-        transform) just far enough to fit the whole menu on the board.
-      */}
-      <div
-        ref={menuRef}
-        className="absolute"
-        onKeyDown={handleKeyDown}
+      {/* The band behind an outer ring. It sweeps out both ways from the item that opened it. */}
+      <svg
+        aria-hidden="true"
+        className="pointer-events-none absolute left-0 top-0 overflow-visible"
+        width={BAND_BOX}
+        height={BAND_BOX}
         style={{
-          left: rest.x,
-          top: rest.y,
-          transform: `translate(${center.x - rest.x}px, ${center.y - rest.y}px)`,
-          transition: reducedMotion ? "none" : `transform 340ms ${GLIDE}`,
+          transform: "translate(-50%, -50%)",
+          filter: "drop-shadow(0 6px 14px rgb(0 0 0 / 0.12))",
         }}
       >
-        {/* The disc behind the main ring. Taps on it, between items, do nothing. */}
-        <div
-          aria-hidden="true"
-          className={`absolute left-0 top-0 rounded-full border border-black/5 bg-white/85 shadow-xl backdrop-blur-sm ${
-            open ? "pointer-events-auto" : "pointer-events-none"
-          }`}
-          onPointerDown={(e) => e.preventDefault()}
-          style={{
-            width: 2 * DISC_RADIUS,
-            height: 2 * DISC_RADIUS,
-            transform: `translate(-50%, -50%) scale(${open ? 1 : 0.3})`,
-            opacity: open ? 1 : 0,
+        {SUB_MENUS.map((ring) => {
+          const shown = open && activeSub === ring;
+          const length = shown ? 1 : 0;
+          const sweep: CSSProperties = {
+            strokeDasharray: `${length} 2`,
+            strokeDashoffset: -(1 - length) / 2,
             transition: reducedMotion
               ? "none"
-              : open
-                ? `transform 380ms ${SPRING}, opacity 180ms ease-out`
-                : `transform 220ms ${EASE_IN} 60ms, opacity 200ms ease-in 60ms`,
-          }}
-        />
-
-        {/* The band behind an outer ring. It sweeps out both ways from the item that opened it. */}
-        <svg
-          aria-hidden="true"
-          className="pointer-events-none absolute left-0 top-0 overflow-visible"
-          width={BAND_BOX}
-          height={BAND_BOX}
-          style={{
-            transform: "translate(-50%, -50%)",
-            filter: "drop-shadow(0 6px 14px rgb(0 0 0 / 0.12))",
-          }}
-        >
-          {SUB_MENUS.map((ring) => {
-            const shown = open && activeSub === ring;
-            const length = shown ? 1 : 0;
-            const sweep: CSSProperties = {
-              strokeDasharray: `${length} 2`,
-              strokeDashoffset: -(1 - length) / 2,
-              transition: reducedMotion
-                ? "none"
-                : `stroke-dasharray 320ms ${GLIDE}, stroke-dashoffset 320ms ${GLIDE}`,
-              pointerEvents: shown ? "stroke" : "none",
-            };
-            return (
-              <g
-                key={ring}
-                onPointerDown={(e) => e.preventDefault()}
-                style={{
-                  opacity: shown ? 1 : 0,
-                  transition: reducedMotion ? "none" : `opacity ${shown ? 120 : 220}ms ease-out`,
-                }}
-              >
-                <path
-                  d={BAND_PATHS[ring]}
-                  pathLength={1}
-                  fill="none"
-                  stroke="rgb(0 0 0 / 0.07)"
-                  strokeWidth={SUB_BAND_WIDTH + 2}
-                  strokeLinecap="round"
-                  style={sweep}
-                />
-                <path
-                  d={BAND_PATHS[ring]}
-                  pathLength={1}
-                  fill="none"
-                  stroke="rgb(255 255 255 / 0.94)"
-                  strokeWidth={SUB_BAND_WIDTH}
-                  strokeLinecap="round"
-                  style={sweep}
-                />
-              </g>
-            );
-          })}
-        </svg>
-
-        {/* Main ring. */}
-        <div
-          role="menu"
-          id={menuId}
-          aria-label="Tools"
-          data-ring="main"
-          inert={!open}
-          className="absolute left-0 top-0"
-        >
-          {MAIN_ORDER.map(renderMainItem)}
-        </div>
-
-        {/* Outer ring: eraser type. */}
-        <div
-          role="menu"
-          id={`${menuId}-eraser`}
-          aria-label="Eraser type"
-          data-ring="eraser"
-          inert={!(open && activeSub === "eraser")}
-          className="absolute left-0 top-0"
-        >
-          {ERASER_MODES.map((mode, index) => {
-            const shown = open && activeSub === "eraser";
-            const chosen = eraserMode === mode.value;
-            return (
-              <Orbit key={mode.value} {...subOrbit("eraser", index)}>
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={chosen}
-                  aria-label={mode.hint}
-                  data-item={`eraser-${mode.value}`}
-                  onClick={() => pickEraserMode(mode.value)}
-                  className={`${itemClass(shown, chosen ? "chosen" : "plain")} text-xs font-semibold`}
-                  {...hintFor(mode.hint)}
-                >
-                  {mode.label}
-                </button>
-              </Orbit>
-            );
-          })}
-        </div>
-
-        {/* Outer ring: board actions. Clear can be undone, so it doesn't ask first. */}
-        <div
-          role="menu"
-          id={`${menuId}-board`}
-          aria-label="Board"
-          data-ring="board"
-          inert={!(open && activeSub === "board")}
-          className="absolute left-0 top-0"
-        >
-          <Orbit {...subOrbit("board", 0)}>
-            <button
-              type="button"
-              role="menuitem"
-              aria-label="Clear the board"
-              data-item="board-clear"
-              disabled={!canClear}
-              onClick={() => {
-                onClear();
-                close();
-              }}
-              className={itemClass(open && activeSub === "board", "danger")}
-              {...hintFor("Clear board")}
-            >
-              <TrashIcon size={22} />
-            </button>
-          </Orbit>
-          <Orbit {...subOrbit("board", 1)}>
-            <button
-              type="button"
-              role="menuitem"
-              aria-label="Reset view"
-              data-item="board-reset"
-              disabled={!canResetView}
-              onClick={() => {
-                onResetView();
-                close();
-              }}
-              className={itemClass(open && activeSub === "board", "plain")}
-              {...hintFor("Reset view")}
-            >
-              <ResetViewIcon size={22} />
-            </button>
-          </Orbit>
-        </div>
-
-        {/* Outer ring: the size slider, a curved track from small (bottom) to big (top). */}
-        <div
-          role="group"
-          id={`${menuId}-size`}
-          aria-label={SIZE_LABELS[sliderTool]}
-          data-ring="size"
-          inert={!sizeShown}
-          className="absolute left-0 top-0"
-        >
-          <div
-            role="slider"
-            tabIndex={0}
-            aria-label={SIZE_LABELS[sliderTool]}
-            aria-valuemin={sliderLimits.min}
-            aria-valuemax={sliderLimits.max}
-            aria-valuenow={sliderSize}
-            aria-valuetext={`${sliderSize} px`}
-            data-item="size-slider"
-            className="group absolute left-0 top-0 outline-none"
-            onPointerDown={handleSliderPointerDown}
-            onPointerMove={handleSliderPointerMove}
-            onPointerUp={finishSlide}
-            onPointerCancel={finishSlide}
-            onKeyDown={handleSliderKeyDown}
-          >
-            <svg
-              aria-hidden="true"
-              className="pointer-events-none absolute left-0 top-0 overflow-visible"
-              width={BAND_BOX}
-              height={BAND_BOX}
+              : `stroke-dasharray 320ms ${GLIDE}, stroke-dashoffset 320ms ${GLIDE}`,
+            pointerEvents: shown ? "stroke" : "none",
+          };
+          return (
+            <g
+              key={ring}
+              onPointerDown={(e) => e.preventDefault()}
               style={{
-                transform: "translate(-50%, -50%)",
-                opacity: sizeShown ? 1 : 0,
-                transition: reducedMotion
-                  ? "none"
-                  : sizeShown
-                    ? "opacity 200ms ease-out 120ms"
-                    : "opacity 120ms ease-in",
+                opacity: shown ? 1 : 0,
+                transition: reducedMotion ? "none" : `opacity ${shown ? 120 : 220}ms ease-out`,
               }}
             >
-              <path d={TRACK_PATH} fill="rgb(0 0 0 / 0.1)" />
-              <path d={filledTrack} fill="#262626" />
-              {/* Catches taps and drags anywhere on the band. */}
               <path
-                d={BAND_PATHS.size}
+                d={BAND_PATHS[ring]}
+                pathLength={1}
                 fill="none"
-                stroke="transparent"
+                stroke="rgb(0 0 0 / 0.07)"
+                strokeWidth={SUB_BAND_WIDTH + 2}
+                strokeLinecap="round"
+                style={sweep}
+              />
+              <path
+                d={BAND_PATHS[ring]}
+                pathLength={1}
+                fill="none"
+                stroke="rgb(255 255 255 / 0.94)"
                 strokeWidth={SUB_BAND_WIDTH}
                 strokeLinecap="round"
-                style={{ pointerEvents: sizeShown ? "stroke" : "none", cursor: "pointer" }}
+                style={sweep}
               />
-            </svg>
-            <div
-              aria-hidden="true"
-              className={`absolute left-0 top-0 grid place-items-center rounded-full bg-white shadow-lg ring-1 ring-black/15 group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-neutral-900 ${
-                sizeShown ? "pointer-events-auto" : "pointer-events-none"
-              } ${sliding ? "cursor-grabbing" : "cursor-grab"}`}
-              style={{
-                width: THUMB_SIZE,
-                height: THUMB_SIZE,
-                transform: sizeShown
-                  ? polarTransform(thumbAngle, SUB_RING_RADIUS, 1)
-                  : polarTransform(MAIN_ANGLES.size, RING_RADIUS, 0.4),
-                opacity: sizeShown ? 1 : 0,
-                // Follows the finger exactly while dragging; glides for taps and keys.
-                transition: reducedMotion
-                  ? "none"
-                  : sliding
-                    ? "opacity 150ms ease-out"
-                    : sizeShown
-                      ? `transform 300ms ${SPRING}, opacity 160ms ease-out`
-                      : `transform 180ms ${EASE_IN}, opacity 150ms ease-in`,
-              }}
-            >
-              <SizePreview
-                tool={sliderTool}
-                diameter={previewDiameter(sliderTool, sliderSize, sliderTool === "text" ? 12 : 4, 28)}
-                color={color}
-              />
-            </div>
+            </g>
+          );
+        })}
+      </svg>
+
+      {/* Main ring. */}
+      <div
+        role="menu"
+        id={menuId}
+        aria-label="Tools"
+        data-ring="main"
+        inert={!open}
+        className="absolute left-0 top-0"
+      >
+        {MAIN_ORDER.map(renderMainItem)}
+      </div>
+
+      {/* Outer ring: eraser type. */}
+      <div
+        role="menu"
+        id={`${menuId}-eraser`}
+        aria-label="Eraser type"
+        data-ring="eraser"
+        inert={!(open && activeSub === "eraser")}
+        className="absolute left-0 top-0"
+      >
+        {ERASER_MODES.map((mode, index) => {
+          const shown = open && activeSub === "eraser";
+          const chosen = eraserMode === mode.value;
+          return (
+            <Orbit key={mode.value} {...subOrbit("eraser", index)}>
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={chosen}
+                aria-label={mode.hint}
+                data-item={`eraser-${mode.value}`}
+                onClick={() => pickEraserMode(mode.value)}
+                className={`${itemClass(shown, chosen ? "chosen" : "plain")} text-xs font-semibold`}
+                {...hintFor(mode.hint)}
+              >
+                {mode.label}
+              </button>
+            </Orbit>
+          );
+        })}
+      </div>
+
+      {/* Outer ring: board actions. Clear can be undone, so it doesn't ask first. */}
+      <div
+        role="menu"
+        id={`${menuId}-board`}
+        aria-label="Board"
+        data-ring="board"
+        inert={!(open && activeSub === "board")}
+        className="absolute left-0 top-0"
+      >
+        <Orbit {...subOrbit("board", 0)}>
+          <button
+            type="button"
+            role="menuitem"
+            aria-label="Clear the board"
+            data-item="board-clear"
+            disabled={!canClear}
+            onClick={() => {
+              onClear();
+              close();
+            }}
+            className={itemClass(open && activeSub === "board", "danger")}
+            {...hintFor("Clear board")}
+          >
+            <TrashIcon size={22} />
+          </button>
+        </Orbit>
+        <Orbit {...subOrbit("board", 1)}>
+          <button
+            type="button"
+            role="menuitem"
+            aria-label="Reset view"
+            data-item="board-reset"
+            disabled={!canResetView}
+            onClick={() => {
+              onResetView();
+              close();
+            }}
+            className={itemClass(open && activeSub === "board", "plain")}
+            {...hintFor("Reset view")}
+          >
+            <ResetViewIcon size={22} />
+          </button>
+        </Orbit>
+      </div>
+
+      {/* Outer ring: the size slider, a curved track from small (bottom) to big (top). */}
+      <div
+        role="group"
+        id={`${menuId}-size`}
+        aria-label={SIZE_LABELS[sliderTool]}
+        data-ring="size"
+        inert={!sizeShown}
+        className="absolute left-0 top-0"
+      >
+        <div
+          role="slider"
+          tabIndex={0}
+          aria-label={SIZE_LABELS[sliderTool]}
+          aria-valuemin={sliderLimits.min}
+          aria-valuemax={sliderLimits.max}
+          aria-valuenow={sliderSize}
+          aria-valuetext={`${sliderSize} px`}
+          data-item="size-slider"
+          className="group absolute left-0 top-0 outline-none"
+          onPointerDown={handleSliderPointerDown}
+          onPointerMove={handleSliderPointerMove}
+          onPointerUp={finishSlide}
+          onPointerCancel={finishSlide}
+          onKeyDown={handleSliderKeyDown}
+        >
+          <svg
+            aria-hidden="true"
+            className="pointer-events-none absolute left-0 top-0 overflow-visible"
+            width={BAND_BOX}
+            height={BAND_BOX}
+            style={{
+              transform: "translate(-50%, -50%)",
+              opacity: sizeShown ? 1 : 0,
+              transition: reducedMotion
+                ? "none"
+                : sizeShown
+                  ? "opacity 200ms ease-out 120ms"
+                  : "opacity 120ms ease-in",
+            }}
+          >
+            <path d={TRACK_PATH} fill="rgb(0 0 0 / 0.1)" />
+            <path d={filledTrack} fill="#262626" />
+            {/* Catches taps and drags anywhere on the band. */}
+            <path
+              d={BAND_PATHS.size}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={SUB_BAND_WIDTH}
+              strokeLinecap="round"
+              style={{ pointerEvents: sizeShown ? "stroke" : "none", cursor: "pointer" }}
+            />
+          </svg>
+          <div
+            aria-hidden="true"
+            className={`absolute left-0 top-0 grid place-items-center rounded-full bg-white shadow-lg ring-1 ring-black/15 group-focus-visible:outline-2 group-focus-visible:outline-offset-2 group-focus-visible:outline-neutral-900 ${
+              sizeShown ? "pointer-events-auto" : "pointer-events-none"
+            } ${sliding ? "cursor-grabbing" : "cursor-grab"}`}
+            style={{
+              width: THUMB_SIZE,
+              height: THUMB_SIZE,
+              transform: sizeShown
+                ? polarTransform(thumbAngle, SUB_RING_RADIUS, 1)
+                : polarTransform(MAIN_ANGLES.size, RING_RADIUS, 0.4),
+              opacity: sizeShown ? 1 : 0,
+              // Follows the finger exactly while dragging; glides for taps and keys.
+              transition: reducedMotion
+                ? "none"
+                : sliding
+                  ? "opacity 150ms ease-out"
+                  : sizeShown
+                    ? `transform 300ms ${SPRING}, opacity 160ms ease-out`
+                    : `transform 180ms ${EASE_IN}, opacity 150ms ease-in`,
+            }}
+          >
+            <SizePreview
+              tool={sliderTool}
+              diameter={previewDiameter(sliderTool, sliderSize, sliderTool === "text" ? 12 : 4, 28)}
+              color={color}
+            />
           </div>
         </div>
-
-        {/* Outer ring: colors, then a custom color. */}
-        <div
-          role="menu"
-          id={`${menuId}-color`}
-          aria-label="Colors"
-          data-ring="color"
-          inert={!(open && activeSub === "color")}
-          className="absolute left-0 top-0"
-        >
-          {COLORS.map(({ name, value }, index) => {
-            const shown = open && activeSub === "color";
-            const chosen = color === value;
-            return (
-              <Orbit key={value} {...subOrbit("color", index)}>
-                <button
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={chosen}
-                  aria-label={name}
-                  data-item={`color-${index}`}
-                  onClick={() => pickColor(value)}
-                  className={`${itemClass(shown, chosen ? "chosen" : "plain")} border-[3px] border-white`}
-                  style={{ backgroundColor: value }}
-                  {...hintFor(name)}
-                />
-              </Orbit>
-            );
-          })}
-          <Orbit key="custom" {...subOrbit("color", COLORS.length)}>
-            {/* The native color picker, opened by tapping the rainbow swatch. Stays open while you pick. */}
-            <label
-              className={`relative grid size-full cursor-pointer place-items-center rounded-full border-[3px] border-white shadow-md transition-[scale] duration-150 hover:scale-110 active:scale-95 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-neutral-900 ${
-                open && activeSub === "color" ? "pointer-events-auto" : "pointer-events-none"
-              } ${isCustomColor ? "ring-[2.5px] ring-neutral-900" : "ring-1 ring-black/10"}`}
-              style={{ background: RAINBOW }}
-              onPointerEnter={() => setHint("Custom color")}
-              onPointerLeave={() =>
-                setHint((current) => (current === "Custom color" ? null : current))
-              }
-            >
-              <input
-                type="color"
-                aria-label="Custom color"
-                data-item="color-custom"
-                value={isCustomColor ? color : CUSTOM_START}
-                onChange={(e) => onSettingsChange(colorPatch(e.target.value))}
-                onFocus={() => setHint("Custom color")}
-                onBlur={() => setHint((current) => (current === "Custom color" ? null : current))}
-                className="sr-only"
-              />
-              {isCustomColor ? (
-                <span
-                  aria-hidden="true"
-                  className="size-5 rounded-full border-2 border-white"
-                  style={{ backgroundColor: color }}
-                />
-              ) : (
-                <span aria-hidden="true" className="text-white drop-shadow">
-                  <PlusIcon size={20} />
-                </span>
-              )}
-            </label>
-          </Orbit>
-        </div>
-
-        {/* The hub, on top of everything. */}
-        <button
-          ref={hubRef}
-          type="button"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-controls={menuId}
-          aria-label={open ? "Close tools menu" : `Tools menu: ${hubSummary}`}
-          title={open ? undefined : "Tools (drag to move)"}
-          onClick={handleHubClick}
-          onPointerDown={handleHubPointerDown}
-          onPointerMove={handleHubPointerMove}
-          onPointerUp={(e) => finishHubPress(e, false)}
-          onPointerCancel={(e) => finishHubPress(e, true)}
-          className={`pointer-events-auto absolute left-0 top-0 touch-none select-none rounded-full bg-white text-neutral-800 shadow-lg ring-1 ring-black/10 transition-[scale,box-shadow] duration-150 ${focusRing} ${
-            dragging ? "scale-110 cursor-grabbing shadow-2xl" : "cursor-pointer hover:scale-105 active:scale-95"
-          }`}
-          style={{ width: HUB_SIZE, height: HUB_SIZE, transform: "translate(-50%, -50%)" }}
-        >
-          <span aria-hidden="true" className="absolute inset-0 grid place-items-center" style={swap(!open, 90)}>
-            <ToolIcon size={28} />
-          </span>
-          <span
-            aria-hidden="true"
-            className="absolute inset-0 grid place-items-center"
-            style={swap(open && !showHint && !showSizeReadout, -90)}
-          >
-            <CloseIcon size={26} />
-          </span>
-          {showHint && (
-            <span
-              aria-hidden="true"
-              className="absolute inset-1 grid place-items-center text-center text-[11px] font-semibold leading-tight text-neutral-900"
-            >
-              {hint}
-            </span>
-          )}
-          {showSizeReadout && (
-            <span
-              aria-hidden="true"
-              className="absolute inset-0 flex flex-col items-center justify-center leading-none text-neutral-900"
-            >
-              <span className="text-xl font-semibold tabular-nums">{size}</span>
-              <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500">px</span>
-            </span>
-          )}
-          {/* The ink color, as a small dot on the closed hub. */}
-          <span
-            aria-hidden="true"
-            className="absolute right-0 top-0 size-[18px] rounded-full border-2 border-white shadow"
-            style={{
-              backgroundColor: color,
-              opacity: open ? 0 : 1,
-              transition: reducedMotion ? "none" : "opacity 150ms ease-out",
-            }}
-          />
-        </button>
       </div>
-    </div>
+
+      {/* Outer ring: colors, then a custom color. */}
+      <div
+        role="menu"
+        id={`${menuId}-color`}
+        aria-label="Colors"
+        data-ring="color"
+        inert={!(open && activeSub === "color")}
+        className="absolute left-0 top-0"
+      >
+        {COLORS.map(({ name, value }, index) => {
+          const shown = open && activeSub === "color";
+          const chosen = color === value;
+          return (
+            <Orbit key={value} {...subOrbit("color", index)}>
+              <button
+                type="button"
+                role="menuitemradio"
+                aria-checked={chosen}
+                aria-label={name}
+                data-item={`color-${index}`}
+                onClick={() => pickColor(value)}
+                className={`${itemClass(shown, chosen ? "chosen" : "plain")} border-[3px] border-white`}
+                style={{ backgroundColor: value }}
+                {...hintFor(name)}
+              />
+            </Orbit>
+          );
+        })}
+        <Orbit key="custom" {...subOrbit("color", COLORS.length)}>
+          {/* The native color picker, opened by tapping the rainbow swatch. Stays open while you pick. */}
+          <label
+            className={`relative grid size-full cursor-pointer place-items-center rounded-full border-[3px] border-white shadow-md transition-[scale] duration-150 hover:scale-110 active:scale-95 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-neutral-900 ${
+              open && activeSub === "color" ? "pointer-events-auto" : "pointer-events-none"
+            } ${isCustomColor ? "ring-[2.5px] ring-neutral-900" : "ring-1 ring-black/10"}`}
+            style={{ background: RAINBOW }}
+            onPointerEnter={() => setHint("Custom color")}
+            onPointerLeave={() =>
+              setHint((current) => (current === "Custom color" ? null : current))
+            }
+          >
+            <input
+              type="color"
+              aria-label="Custom color"
+              data-item="color-custom"
+              value={isCustomColor ? color : CUSTOM_START}
+              onChange={(e) => onSettingsChange(colorPatch(e.target.value))}
+              onFocus={() => setHint("Custom color")}
+              onBlur={() => setHint((current) => (current === "Custom color" ? null : current))}
+              className="sr-only"
+            />
+            {isCustomColor ? (
+              <span
+                aria-hidden="true"
+                className="size-5 rounded-full border-2 border-white"
+                style={{ backgroundColor: color }}
+              />
+            ) : (
+              <span aria-hidden="true" className="text-white drop-shadow">
+                <PlusIcon size={20} />
+              </span>
+            )}
+          </label>
+        </Orbit>
+      </div>
+
+      {/* The hub, on top of everything. */}
+      <button
+        ref={hubRef}
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={menuId}
+        aria-label={open ? "Close tools menu" : `Tools menu: ${hubSummary}`}
+        title={open ? undefined : "Tools (drag to move)"}
+        onClick={handleHubClick}
+        {...hub.hubPointerHandlers}
+        className={`pointer-events-auto absolute left-0 top-0 touch-none select-none rounded-full bg-white text-neutral-800 shadow-lg ring-1 ring-black/10 transition-[scale,box-shadow] duration-150 ${focusRing} ${
+          hub.dragging ? "scale-110 cursor-grabbing shadow-2xl" : "cursor-pointer hover:scale-105 active:scale-95"
+        }`}
+        style={{ width: HUB_SIZE, height: HUB_SIZE, transform: "translate(-50%, -50%)" }}
+      >
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 grid place-items-center"
+          style={hubSwap(!open, 90, reducedMotion)}
+        >
+          <ToolIcon size={28} />
+        </span>
+        <span
+          aria-hidden="true"
+          className="absolute inset-0 grid place-items-center"
+          style={hubSwap(open && !showHint && !showSizeReadout, -90, reducedMotion)}
+        >
+          <CloseIcon size={26} />
+        </span>
+        {showHint && (
+          <span
+            aria-hidden="true"
+            className="absolute inset-1 grid place-items-center text-center text-[11px] font-semibold leading-tight text-neutral-900"
+          >
+            {hint}
+          </span>
+        )}
+        {showSizeReadout && (
+          <span
+            aria-hidden="true"
+            className="absolute inset-0 flex flex-col items-center justify-center leading-none text-neutral-900"
+          >
+            <span className="text-xl font-semibold tabular-nums">{size}</span>
+            <span className="text-[10px] font-medium uppercase tracking-wide text-neutral-500">px</span>
+          </span>
+        )}
+        {/* The ink color, as a small dot on the closed hub. */}
+        <span
+          aria-hidden="true"
+          className="absolute right-0 top-0 size-[18px] rounded-full border-2 border-white shadow"
+          style={{
+            backgroundColor: color,
+            opacity: open ? 0 : 1,
+            transition: reducedMotion ? "none" : "opacity 150ms ease-out",
+          }}
+        />
+      </button>
+    </RadialFrame>
   );
 }

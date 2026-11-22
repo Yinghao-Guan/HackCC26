@@ -3,16 +3,16 @@ import { parseCheckResult, type CheckResult } from "@/lib/check";
 import { parseGraphResult, type GraphResult } from "@/lib/graph";
 import { parseSolveResult, type SolveResult } from "@/lib/solve";
 
-/** The things the AI buttons can do. */
+/** The things the AI menu buttons can do. */
 export type AiAction = "solve" | "graph" | "check";
 
-/** What the panel shows under the AI buttons. */
+/** What the AI menu says about the last request (in the bubble beside its button). */
 export type AiStatus =
   | { state: "idle" }
   | { state: "loading"; action: AiAction | "ask" }
   | { state: "message"; tone: "info" | "error"; text: string };
 
-/** What the panel shows under the mic button. `heard` is what has been made out of the speech so far. */
+/** What the AI menu says about voice input. `heard` is what has been made out of the speech so far. */
 export type VoiceStatus =
   | { state: "idle" }
   | { state: "listening"; heard?: string }

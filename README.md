@@ -24,7 +24,7 @@ Then open [http://localhost:3000](http://localhost:3000).
 
 ## Whiteboard tools
 
-The board fills the whole screen. The tools are in the round button floating on it (see [Tool menu](#tool-menu-the-round-button) below).
+The board fills the whole screen. Two round buttons float on it: the **tool menu** (a pen icon, bottom right at first; see [Tool menu](#tool-menu-the-round-button) below) and the **AI menu** (sparkles, bottom middle; see [AI menu](#ai-menu-the-sparkle-button)).
 
 - **Pen**: draw with the mouse (or a finger or stylus).
 - **Eraser**: *Pixel* rubs out part of a stroke; *Stroke* removes a whole stroke or text box with one touch.
@@ -47,15 +47,24 @@ The round button floats on the board (bottom right at first), close to where you
 
 Each button is always in the same direction, so with use you can reach for it without looking (the idea behind marking menus, which work best with up to eight choices per ring). The menu follows the system's *reduce motion* setting. The code is in `src/components/whiteboard/RadialMenu.tsx`, with the geometry in `radialGeometry.ts`.
 
-> The side panel that used to sit on the right has been removed. Its **Solve**, **Graph**, **Check** and **Speak** buttons are moving to a separate AI menu that is still being built, so for now the features below have no button. Their code is still in place in `Whiteboard.tsx`.
+### AI menu (the sparkle button)
+
+The second round button works the same way as the tool menu (tap to open, drag to move, the same animation and keyboard keys). Four buttons fan out around it: **Solve** at the top, **Graph** on the right, **Check** at the bottom and **Speak** on the left, each in its own color. Tap one and the menu closes while it works.
+
+- While a request runs, a ring spins around the button in that action's color, and the other actions wait (only one request at a time).
+- While it is listening, the button turns red with a microphone; tap it to stop.
+- A small bubble beside the button says what is happening, what was heard, and any message (for example "Write a math problem on the board first."). Messages fade after a few seconds, or tap × to close them.
+- Only one of the two menus is open at a time: while one is open, a tap anywhere else (including on the other button) closes it first.
+
+The code is in `src/components/whiteboard/AiMenu.tsx`. What both menus share (the motion, the round buttons, the disc, the draggable button) is in `radialKit.tsx`.
 
 ## AI: Solve
 
-Write a math problem on the board and press **Solve**. The board's ink is sent to the Claude API (through the route in `src/app/api/solve/`), which reads the handwriting and solves it. The reading, the steps and the answer are written on the board next to the problem. This needs `ANTHROPIC_API_KEY` in `.env.local` (git-ignored); restart `npm run dev` after changing it.
+Write a math problem on the board and tap **Solve** in the AI menu. The board's ink is sent to the Claude API (through the route in `src/app/api/solve/`), which reads the handwriting and solves it. The reading, the steps and the answer are written on the board next to the problem. This needs `ANTHROPIC_API_KEY` in `.env.local` (git-ignored); restart `npm run dev` after changing it.
 
 ## AI: Graph
 
-Write an equation (or a few, like a system) and press **Graph**. Claude reads them through `src/app/api/graph/` and says how to plot each one: a formula and a sensible window. The board then draws the curves itself, as a crisp SVG with axes and a color key, next to your writing. Explicit functions (`y = x^2 - 3x + 2`, lines, `sin`, `1/x`) and implicit ones (circles, hyperbolas) both work. If what is on screen is only **typed** equations (Text tool) that follow the usual forms, the graph is drawn right away on your machine: no AI call, no waiting (about 14 ms in testing), and it works offline. Handwriting, sentences, LaTeX and anything unclear still go to Claude (a few seconds). The formula evaluator is in `src/lib/expression.ts` and the drawing math is in `src/lib/plot.ts`; neither needs a library.
+Write an equation (or a few, like a system) and tap **Graph** in the AI menu. Claude reads them through `src/app/api/graph/` and says how to plot each one: a formula and a sensible window. The board then draws the curves itself, as a crisp SVG with axes and a color key, next to your writing. Explicit functions (`y = x^2 - 3x + 2`, lines, `sin`, `1/x`) and implicit ones (circles, hyperbolas) both work. If what is on screen is only **typed** equations (Text tool) that follow the usual forms, the graph is drawn right away on your machine: no AI call, no waiting (about 14 ms in testing), and it works offline. Handwriting, sentences, LaTeX and anything unclear still go to Claude (a few seconds). The formula evaluator is in `src/lib/expression.ts` and the drawing math is in `src/lib/plot.ts`; neither needs a library.
 
 ### 3D graphs
 
@@ -63,11 +72,11 @@ If an equation uses `z`, **Graph** shows a 3D view instead: surfaces such as `z 
 
 ## AI: Check (find the mistake)
 
-Write a problem and your worked steps, one step per line, and press **Check**. The board's ink is split into lines on your machine and sent to Claude (through `src/app/api/check/`) with a red number beside each line. Claude finds the **first** step that does not follow, says why, shows how that line should read, carries on to the right answer, and the wrong line is circled on the board with a **Step N** tag. If all the steps are right, it says so instead. Because the line numbers come from our own line-splitting, the circle always lands on the line Claude meant. Leave a little space between lines so they can be told apart.
+Write a problem and your worked steps, one step per line, and tap **Check** in the AI menu. The board's ink is split into lines on your machine and sent to Claude (through `src/app/api/check/`) with a red number beside each line. Claude finds the **first** step that does not follow, says why, shows how that line should read, carries on to the right answer, and the wrong line is circled on the board with a **Step N** tag. If all the steps are right, it says so instead. Because the line numbers come from our own line-splitting, the circle always lands on the line Claude meant. Leave a little space between lines so they can be told apart.
 
 ## Voice: talk to the board
 
-Tap **Speak** and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in the panel as you say them. Short pauses mid-sentence are fine: it waits until the words have stopped for about 1.5 seconds, then runs the matching button on what is on screen. Tap the button again to stop early.
+Tap **Speak** in the AI menu and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in a bubble beside the AI button as you say them. Short pauses mid-sentence are fine: it waits until the words have stopped for about 1.5 seconds, then runs the matching button on what is on screen. Tap the red button to stop early.
 
 You can also **ask a question**, such as "give me an example question on the chain rule" or "explain how to differentiate this". Anything you say that isn't one of the commands above (and is at least three words) goes to Claude through `src/app/api/ask/`. If something is written on screen, an image of it goes along, so "explain this step" works; with an empty board only the question is sent. The answer is written on the board as a card with the question, short explanations and formulas shown with KaTeX. Sentences that start with *how, why, explain, describe, define, tell me, give me* or *teach me* are always treated as questions, even if they contain a word like "solve" ("how do I solve a quadratic" explains; "solve this" solves).
 
@@ -101,7 +110,7 @@ src/app/api/solve/          Server route: reads the board image and solves it
 src/app/api/graph/          Server route: reads the board image and lists the curves or surfaces to graph
 src/app/api/check/          Server route: reads numbered lines of work and finds the first mistake
 src/app/api/ask/            Server route: answers a spoken question (with the board image, if there is writing)
-src/components/whiteboard/  Drawing canvas, stroke model, round tool menu, voice input, answer, graph (2D and 3D) and check cards
+src/components/whiteboard/  Drawing canvas, stroke model, round tool and AI menus, voice input, answer, graph (2D and 3D) and check cards
 src/lib/                    Code shared by the server and the browser
 docs/                       Project documentation
 ```

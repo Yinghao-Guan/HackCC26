@@ -18,6 +18,7 @@ import {
   type AiStatus,
   type VoiceStatus,
 } from "./ai";
+import { AiMenu } from "./AiMenu";
 import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
 import { CheckCard } from "./CheckCard";
@@ -50,10 +51,8 @@ const VOICE_REPLIES: Record<VoiceCommand, string> = {
 const MAX_CHECK_LINES = 60;
 
 /**
- * The whole board: one full-screen drawing area, with the floating round tool menu on top.
- *
- * The AI actions (solve, graph, check, spoken questions) and voice input below are kept ready
- * for the AI menu that is being built separately; no button calls them yet.
+ * The whole board: one full-screen drawing area, with two floating round menus on top: the tool
+ * menu (pen, eraser, size, color, undo...) and the AI menu (solve, graph, check, speak).
  */
 export function Whiteboard() {
   const [settings, setSettings] = useState<WhiteboardSettings>(DEFAULT_SETTINGS);
@@ -504,6 +503,16 @@ export function Whiteboard() {
           onUndo={undo}
           onClear={clear}
           onResetView={resetView}
+        />
+
+        {/* The floating round AI menu: solve, graph, check and speak. */}
+        <AiMenu
+          ai={ai}
+          voice={listening ? { state: "listening", heard: hearing } : voice}
+          onSolve={solve}
+          onGraph={graph}
+          onCheck={check}
+          onVoiceToggle={toggleVoice}
         />
       </main>
     </div>

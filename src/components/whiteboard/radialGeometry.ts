@@ -1,4 +1,5 @@
-// Geometry for the floating radial tool menu (RadialMenu.tsx).
+// Geometry for the floating radial menus: the tool menu (RadialMenu.tsx) and the AI menu
+// (AiMenu.tsx). The sizes below are the tool menu's; the AI menu keeps its own.
 // Angles are in degrees, clockwise from pointing right, because screen y points down.
 
 import { SIZE_LIMITS, type SizedTool } from "./settings";
@@ -154,9 +155,15 @@ export interface Extent {
   maxY: number;
 }
 
-/** The space the open menu covers: the disc, plus the band of an open outer ring (its span). */
-export function menuExtent(openSpan: readonly [number, number] | null): Extent {
-  const disc = DISC_RADIUS + SHADOW_ROOM;
+/**
+ * The space an open menu covers: its disc (`discRadius`), plus the band of an open outer ring
+ * (`openSpan`, its first and last direction), if there is one.
+ */
+export function menuExtent(
+  discRadius: number,
+  openSpan: readonly [number, number] | null = null,
+): Extent {
+  const disc = discRadius + SHADOW_ROOM;
   const extent = { minX: -disc, minY: -disc, maxX: disc, maxY: disc };
   if (!openSpan) return extent;
 
