@@ -112,3 +112,20 @@ def true_camera_to_board() -> np.ndarray:
     """The exact camera px -> board CSS px mapping for the synthetic scene."""
     css_from_centre = np.array([[1, 0, 0.5], [0, 1, 0.5], [0, 0, 1]], dtype=np.float64)
     return css_from_centre @ np.linalg.inv(board_to_camera())
+
+
+# -- printed (static) markers around the board, seen directly by the camera (Phase 5) --
+
+STATIC_SPOTS = {40: (30, 25), 41: (1180, 25), 42: (30, 625), 43: (1180, 625)}  # top-left, camera px
+STATIC_SIZE = 70
+
+
+def add_static_markers(frame: np.ndarray, dx: int = 0, dy: int = 0) -> np.ndarray:
+    """A copy of a camera frame with the printed markers stuck around the board (shifted by dx, dy)."""
+    out = frame.copy()
+    for marker_id, (x, y) in STATIC_SPOTS.items():
+        tile = np.full((STATIC_SIZE + 20, STATIC_SIZE + 20), 255, np.uint8)  # white paper margin
+        tile[10:-10, 10:-10] = marker_image(marker_id, STATIC_SIZE)
+        x0, y0 = x + dx - 10, y + dy - 10
+        out[y0 : y0 + tile.shape[0], x0 : x0 + tile.shape[1]] = cv2.cvtColor(tile, cv2.COLOR_GRAY2BGR)
+    return out
