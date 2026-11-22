@@ -5,48 +5,120 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // The commands are in English, so listen for English whatever language the browser is set to.
 const LANGUAGE = "en-US";
 
+// Listening ends once the words have stopped changing for this long. The browser on its own
+// ends at the first short pause, which cut sentences in half ("what does quadratic equation").
+const END_AFTER_QUIET_MS = 1500;
+// Give up if no words have come in after this long, and stop in any case after this long.
+const NO_WORDS_MS = 8000;
+const MAX_LISTEN_MS = 15_000;
+const CHECK_EVERY_MS = 200;
+// If the browser hasn't finished this long after being asked to stop, end it anyway.
+const STOP_TIMEOUT_MS = 2500;
+// A tap this soon after listening ended is taken as the tap that was meant to stop it.
+const RESTART_GRACE_MS = 600;
+// Ask for a few guesses at what was said, so a misheard command ("soul this") can be recovered.
+const GUESSES = 3;
+// A hiccup from the online speech service is retried this many times, if nothing was heard yet.
+const NETWORK_RETRIES = 1;
+
+// Words the recognizer should lean towards. Only on-device recognition supports this.
+const BOARD_PHRASES = [
+  "solve this",
+  "graph this",
+  "check my work",
+  "undo that",
+  "chain rule",
+  "product rule",
+  "quotient rule",
+  "derivative",
+  "differentiate",
+  "integral",
+  "integrate",
+  "quadratic",
+  "polynomial",
+  "equation",
+  "system of equations",
+  "coordinate system",
+  "square root",
+  "squared",
+  "cubed",
+  "logarithm",
+  "sine",
+  "cosine",
+  "tangent",
+  "limit",
+  "slope",
+  "intercept",
+];
+const PHRASE_BOOST = 3;
+
 // The browser's speech recognizer goes by two names, and TypeScript's built-in types
 // don't include it, so this declares just the parts used here.
+interface Guess {
+  transcript: string;
+}
+interface ResultLike {
+  isFinal: boolean;
+  length: number;
+  [index: number]: Guess;
+}
 interface Recognizer {
   lang: string;
   continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
+  processLocally?: boolean;
+  phrases?: unknown[];
   onaudiostart: (() => void) | null;
   onsoundstart: (() => void) | null;
   onspeechstart: (() => void) | null;
-  onresult: ((event: { results: SpeechRecognitionResultList }) => void) | null;
+  onresult: ((event: { results: ArrayLike<ResultLike> }) => void) | null;
   onerror: ((event: { error: string; message?: string }) => void) | null;
   onend: (() => void) | null;
   start(): void;
   stop(): void;
   abort(): void;
 }
+interface LocalOptions {
+  langs: string[];
+  processLocally: boolean;
+}
+interface RecognizerClass {
+  new (): Recognizer;
+  /** Whether on-device recognition can be used: "available", "downloadable", "downloading" or "unavailable". */
+  available?: (options: LocalOptions) => Promise<string>;
+}
 
-function recognizerClass(): (new () => Recognizer) | null {
+function recognizerClass(): RecognizerClass | null {
   const global = window as unknown as {
-    SpeechRecognition?: new () => Recognizer;
-    webkitSpeechRecognition?: new () => Recognizer;
+    SpeechRecognition?: RecognizerClass;
+    webkitSpeechRecognition?: RecognizerClass;
   };
   return global.SpeechRecognition ?? global.webkitSpeechRecognition ?? null;
 }
 
-type Tone = "info" | "error";
+function phraseClass(): (new (phrase: string, boost: number) => unknown) | null {
+  const global = window as unknown as {
+    SpeechRecognitionPhrase?: new (phrase: string, boost: number) => unknown;
+  };
+  return global.SpeechRecognitionPhrase ?? null;
+}
 
-// A tap this soon after listening ended is taken as the tap that was meant to stop it.
-const RESTART_GRACE_MS = 600;
+type Tone = "info" | "error";
 
 // Each step of listening is written to the browser console, to help find out why
 // nothing was heard on a particular computer.
 const note = (what: string, detail = "") => console.info("[speech]", what, detail);
+
+const tidy = (text: string) => text.replace(/\s+/g, " ").trim();
+// The words alone, so a change of capitals or punctuation doesn't count as new speech.
+const wordsOf = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 /** What to tell the user about an error from the recognizer, or null if it needs no message. */
 function problemWith(code: string): { message: string; tone: Tone } | null {
   switch (code) {
     case "aborted":
       return null; // we stopped it ourselves
-    case "no-speech":
-      return { message: "I didn't hear anything. Tap the mic and try again.", tone: "info" };
     case "not-allowed":
     case "service-not-allowed":
       return {
@@ -57,7 +129,7 @@ function problemWith(code: string): { message: string; tone: Tone } | null {
       return { message: "No microphone was found. Plug one in and try again.", tone: "error" };
     case "network":
       return {
-        message: "Speech recognition needs the internet, and couldn't reach its service.",
+        message: "Speech recognition needs the internet, and couldn't reach its service. Try again.",
         tone: "error",
       };
     default:
@@ -66,16 +138,22 @@ function problemWith(code: string): { message: string; tone: Tone } | null {
 }
 
 interface SpeechOptions {
-  /** What was said, once the person has finished speaking. */
-  onSpeech: (heard: string) => void;
+  /**
+   * What was said, once the person has finished speaking, and the recognizer's other
+   * guesses at the whole thing (most likely first), in case the first one was misheard.
+   */
+  onSpeech: (heard: string, otherGuesses: string[]) => void;
   /** Listening could not start, or nothing was made out: a message for the user. */
   onProblem: (message: string, tone: Tone) => void;
 }
 
 /**
  * Listen with the browser's own speech recognition (no server, no key). `start` begins
- * listening; it ends by itself when the person stops talking, or when `stop` is called.
- * The words go to `onSpeech`, and `hearing` shows them as they come in.
+ * listening; it ends by itself once the person has paused for a moment, or when `stop`
+ * is called. The words go to `onSpeech`, and `hearing` shows them as they come in.
+ *
+ * Where the browser can recognise speech on the device, that is used, with a list of
+ * math words to favour; otherwise it uses the browser's online service.
  */
 export function useSpeechRecognition({ onSpeech, onProblem }: SpeechOptions) {
   const [listening, setListening] = useState(false);
@@ -83,6 +161,11 @@ export function useSpeechRecognition({ onSpeech, onProblem }: SpeechOptions) {
 
   // What is listening right now, if anything. `cancel` drops whatever it heard.
   const session = useRef<{ stop: () => void; cancel: () => void } | null>(null);
+  // When listening last ended, to tell a deliberate tap from one that came just too late.
+  const endedAt = useRef(0);
+  // Whether on-device recognition is ready, and whether it has failed here before.
+  const onDevice = useRef<"unknown" | "available" | "unavailable">("unknown");
+  const onDeviceFailed = useRef(false);
 
   // The callbacks may change between renders; listening should call the latest ones.
   const latest = useRef({ onSpeech, onProblem });
@@ -90,14 +173,29 @@ export function useSpeechRecognition({ onSpeech, onProblem }: SpeechOptions) {
     latest.current = { onSpeech, onProblem };
   });
 
-  // When listening last ended, to tell a deliberate tap from one that came just too late.
-  const endedAt = useRef(0);
+  /** Find out (again) whether on-device recognition is ready. It can become ready later. */
+  const checkOnDevice = useCallback(() => {
+    const Recognizer = recognizerClass();
+    if (!Recognizer?.available) {
+      onDevice.current = "unavailable";
+      return;
+    }
+    Recognizer.available({ langs: [LANGUAGE], processLocally: true })
+      .then((answer) => {
+        onDevice.current = answer === "available" ? "available" : "unavailable";
+        note("on-device recognition", answer);
+      })
+      .catch(() => {
+        onDevice.current = "unavailable";
+      });
+  }, []);
+  useEffect(checkOnDevice, [checkOnDevice]);
 
   /** Start listening. Gives false if it didn't start (already listening, or it could not). */
   const start = useCallback((): boolean => {
     if (session.current) return false;
-    // The browser stops listening by itself when you pause, so a tap meant to stop it often lands
-    // just after it already has. That tap must not start another round.
+    // The browser stops listening by itself, so a tap meant to stop it can land just after
+    // it already has. That tap must not start another round.
     if (Date.now() - endedAt.current < RESTART_GRACE_MS) return false;
 
     const Recognizer = recognizerClass();
@@ -106,20 +204,20 @@ export function useSpeechRecognition({ onSpeech, onProblem }: SpeechOptions) {
       return false;
     }
 
-    const recognizer = new Recognizer();
-    recognizer.lang = LANGUAGE;
-    recognizer.continuous = false; // ends after the first sentence
-    recognizer.interimResults = true; // so the words show as they are said
-    recognizer.maxAlternatives = 1;
-
-    let confirmed = ""; // the words the browser is sure of
-    let latestWords = ""; // everything so far, sure or not
-    let failed = false;
-    let cancelled = false;
-
-    // How far listening got, so that a silent result can say what went wrong.
+    // One round of listening. It can use more than one recognizer: a retry after a network
+    // hiccup, or going online when on-device recognition doesn't work.
+    const began = Date.now();
+    let recognizer: Recognizer | null = null;
+    let heard = ""; // everything so far, sure or not
+    let otherGuesses: string[] = [];
+    let lastChange = began;
     let gotAudio = false; // the microphone opened
     let gotSound = false; // something louder than silence came in
+    let stopping = false; // we asked the recognizer to stop
+    let cancelled = false;
+    let done = false;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
+
     const nothingHeard = () => {
       if (!gotAudio) {
         return "I couldn't get any audio from the microphone. Check that the browser and your computer allow it, and that the right microphone is selected.";
@@ -127,73 +225,156 @@ export function useSpeechRecognition({ onSpeech, onProblem }: SpeechOptions) {
       if (!gotSound) {
         return "The microphone is on, but I couldn't hear any sound. Check its input volume and that the right microphone is selected.";
       }
-      return "I heard sound but couldn't make out any words. Speak English, close to the microphone. Chrome also needs the internet to recognise speech.";
+      return "I heard sound but couldn't make out any words. Speak English, close to the microphone.";
     };
 
-    recognizer.onaudiostart = () => {
-      gotAudio = true;
-      note("audio started");
-    };
-    recognizer.onsoundstart = () => {
-      gotSound = true;
-      note("sound heard");
-    };
-    recognizer.onspeechstart = () => note("speech heard");
-
-    recognizer.onresult = (event) => {
-      let sure = "";
-      let unsure = "";
-      for (let i = 0; i < event.results.length; i++) {
-        const result = event.results[i];
-        if (result.isFinal) sure += result[0].transcript;
-        else unsure += result[0].transcript;
-      }
-      confirmed = sure.trim();
-      latestWords = `${sure} ${unsure}`.trim();
-      note("words", `${JSON.stringify(latestWords)} (${confirmed ? "final" : "so far"})`);
-      setHearing(latestWords);
-    };
-    recognizer.onerror = (event) => {
-      note("error", `${event.error} ${event.message ?? ""}`);
-      const problem =
-        event.error === "no-speech"
-          ? { message: nothingHeard(), tone: "info" as Tone }
-          : problemWith(event.error);
-      if (!problem) return;
-      failed = true;
-      latest.current.onProblem(problem.message, problem.tone);
-    };
-    recognizer.onend = () => {
-      note("ended", `audio=${gotAudio} sound=${gotSound} words=${JSON.stringify(confirmed || latestWords)}`);
-      endedAt.current = Date.now();
+    const finish = () => {
+      done = true;
+      clearInterval(watcher);
+      clearTimeout(stopTimer);
       session.current = null;
+      endedAt.current = Date.now();
       setListening(false);
       setHearing("");
-      if (cancelled || failed) return;
-
-      // Tapping stop can come before the browser has settled on the words, so fall back to what it had.
-      const heard = confirmed || latestWords;
-      if (heard) latest.current.onSpeech(heard);
-      else latest.current.onProblem(nothingHeard(), "info");
+      checkOnDevice();
     };
 
-    try {
-      recognizer.start();
-      note("started", `lang=${recognizer.lang}`);
-    } catch {
+    const stopListening = (why: string) => {
+      if (stopping || done || !recognizer) return;
+      stopping = true;
+      note("stopping", why);
+      recognizer.stop();
+      // If the browser never says it has finished, finish anyway with what was heard.
+      const current = recognizer;
+      stopTimer = setTimeout(() => current.abort(), STOP_TIMEOUT_MS);
+    };
+
+    const attempt = (local: boolean, retriesLeft: number) => {
+      const r = new Recognizer();
+      recognizer = r;
+      r.lang = LANGUAGE;
+      r.continuous = true; // we decide when the sentence is over, not the browser
+      r.interimResults = true; // so the words show as they are said
+      r.maxAlternatives = GUESSES;
+      if (local) r.processLocally = true;
+      const Phrase = local ? phraseClass() : null;
+      let usingPhrases = false;
+      if (Phrase) {
+        try {
+          r.phrases = BOARD_PHRASES.map((phrase) => new Phrase(phrase, PHRASE_BOOST));
+          usingPhrases = true;
+        } catch {
+          // Listening still works without the word list.
+        }
+      }
+
+      let error: string | null = null;
+
+      r.onaudiostart = () => {
+        gotAudio = true;
+        note("audio started");
+      };
+      r.onsoundstart = () => {
+        gotSound = true;
+        note("sound heard");
+      };
+      r.onspeechstart = () => note("speech heard");
+      r.onresult = (event) => {
+        const results = Array.from(event.results);
+        const guess = (k: number) =>
+          tidy(results.map((result) => (result.length > k ? result[k] : result[0])?.transcript ?? "").join(" "));
+
+        const next = guess(0);
+        if (wordsOf(next) !== wordsOf(heard)) lastChange = Date.now();
+        heard = next;
+        otherGuesses = [];
+        for (let k = 1; k < GUESSES; k++) {
+          const other = guess(k);
+          if (other && wordsOf(other) !== wordsOf(heard) && !otherGuesses.includes(other)) otherGuesses.push(other);
+        }
+        const final = results.every((result) => result.isFinal);
+        note("words", `${JSON.stringify(heard)} (${final ? "final" : "so far"})`);
+        setHearing(heard);
+      };
+      r.onerror = (event) => {
+        note("error", `${event.error} ${event.message ?? ""}`);
+        error = event.error;
+      };
+      r.onend = () => {
+        if (recognizer !== r || done) return; // an older recognizer, already replaced
+        note("ended", `audio=${gotAudio} sound=${gotSound} words=${JSON.stringify(heard)}`);
+
+        if (cancelled) {
+          finish();
+          return;
+        }
+        // Nothing heard yet and it failed: try again a different way, if there is one.
+        if (error && !heard && !stopping) {
+          const unrecoverable = ["no-speech", "aborted", "not-allowed", "service-not-allowed", "audio-capture"];
+          if (local && !unrecoverable.includes(error)) {
+            onDeviceFailed.current = true;
+            note("on-device recognition failed, going online", error);
+            if (tryAttempt(false, retriesLeft)) return;
+          } else if (error === "network" && retriesLeft > 0) {
+            note("retrying after a network error");
+            if (tryAttempt(local, retriesLeft - 1)) return;
+          }
+        }
+
+        finish();
+        if (heard) {
+          latest.current.onSpeech(heard, otherGuesses);
+          return;
+        }
+        const problem =
+          error && error !== "no-speech" ? problemWith(error) : { message: nothingHeard(), tone: "info" as Tone };
+        if (problem) latest.current.onProblem(problem.message, problem.tone);
+      };
+
+      r.start();
+      note("started", `${local ? "on device" : "online"}, ${LANGUAGE}${usingPhrases ? `, ${BOARD_PHRASES.length} phrases` : ""}`);
+    };
+    /** Start a recognizer, and say whether it started. */
+    const tryAttempt = (local: boolean, retriesLeft: number) => {
+      try {
+        attempt(local, retriesLeft);
+        return true;
+      } catch (error) {
+        note("couldn't start", error instanceof Error ? error.message : "");
+        return false;
+      }
+    };
+
+    // End the round once the words have settled, or if nothing comes, or after the time limit.
+    const watcher = setInterval(() => {
+      const now = Date.now();
+      if (heard && now - lastChange >= END_AFTER_QUIET_MS) stopListening("pause after speaking");
+      else if (!heard && now - began >= NO_WORDS_MS) stopListening("no words");
+      else if (now - began >= MAX_LISTEN_MS) stopListening("time limit");
+    }, CHECK_EVERY_MS);
+
+    const local = onDevice.current === "available" && !onDeviceFailed.current;
+    let started = tryAttempt(local, NETWORK_RETRIES);
+    if (!started && local) {
+      onDeviceFailed.current = true;
+      started = tryAttempt(false, NETWORK_RETRIES);
+    }
+    if (!started) {
+      clearInterval(watcher);
       latest.current.onProblem("Couldn't start listening. Try again.", "error");
       return false;
     }
+
     session.current = {
-      stop: () => recognizer.stop(),
+      stop: () => stopListening("tap"),
       cancel: () => {
         cancelled = true;
-        recognizer.abort();
+        recognizer?.abort();
       },
     };
     setListening(true);
     return true;
-  }, []);
+  }, [checkOnDevice]);
 
   const stop = useCallback(() => session.current?.stop(), []);
 

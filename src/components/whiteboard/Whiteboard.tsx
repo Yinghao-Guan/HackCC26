@@ -344,8 +344,21 @@ export function Whiteboard() {
 
   /** Something was said: do what it asks for, or if it is a question, answer it. */
   const handleSpeech = useCallback(
-    (heard: string) => {
-      const spoken = parseSpoken(heard);
+    (firstGuess: string, otherGuesses: string[]) => {
+      let heard = firstGuess;
+      let spoken = parseSpoken(heard);
+      // A short phrase that is neither a command nor a question was probably misheard ("soul
+      // this"). If one of the recognizer's other guesses is a command, go with that.
+      if (spoken.kind === "unknown") {
+        for (const guess of otherGuesses) {
+          const other = parseSpoken(guess);
+          if (other.kind === "command") {
+            heard = guess;
+            spoken = other;
+            break;
+          }
+        }
+      }
       if (spoken.kind === "unknown") {
         setVoice({
           state: "message",

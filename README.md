@@ -47,11 +47,20 @@ Write a problem and your worked steps, one step per line, and press **Check**. T
 
 ## Voice: talk to the board
 
-Tap **Speak** in the side panel and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in the panel as you say them, and when you pause it runs the matching button on what is on screen. Tap the button again to stop early.
+Tap **Speak** in the side panel and say what you want: "solve this", "graph this" (or "draw a 3D coordinate system for these equations"), "check my work" or "find the mistake", or "undo that". The words show up in the panel as you say them. Short pauses mid-sentence are fine: it waits until the words have stopped for about 1.5 seconds, then runs the matching button on what is on screen. Tap the button again to stop early.
 
 You can also **ask a question**, such as "give me an example question on the chain rule" or "explain how to differentiate this". Anything you say that isn't one of the commands above (and is at least three words) goes to Claude through `src/app/api/ask/`. If something is written on screen, an image of it goes along, so "explain this step" works; with an empty board only the question is sent. The answer is written on the board as a card with the question, short explanations and formulas shown with KaTeX. Sentences that start with *how, why, explain, describe, define, tell me, give me* or *teach me* are always treated as questions, even if they contain a word like "solve" ("how do I solve a quadratic" explains; "solve this" solves).
 
-This uses the browser's own speech recognition (the Web Speech API), so it needs no API key, no server route and no account. It works in Chrome, Edge and Safari, not Firefox. In Chrome the audio is processed by Google's speech service (Apple's in Safari), so it needs an internet connection, and the page must be on `localhost` or `https`. The app never records or stores audio itself. It listens for English; the browser asks for microphone permission the first time.
+This uses the browser's own speech recognition (the Web Speech API), so it needs no API key, no server route and no account. It works in Chrome, Edge and Safari, not Firefox. The page must be on `localhost` or `https`, the browser asks for microphone permission the first time, and it listens for English. The app never records or stores audio itself.
+
+To make it steadier:
+
+- **On-device recognition when the browser has it.** If the browser has an English speech model on the computer, that is used, with a list of math words to favour ("chain rule", "derivative", "integral" and so on). It needs no internet and is usually quicker. Otherwise the browser's online service is used (Google's in Chrome, Apple's in Safari), which needs an internet connection. The browser console shows which one with a line like `[speech] on-device recognition available`. If on-device recognition fails, it switches to online for the rest of the session.
+- **A network hiccup is retried once** before an error is shown.
+- **Misheard commands are recovered.** The browser gives three guesses; if the first is neither a command nor a question ("soul this") but another guess is a command ("solve this"), that one is used.
+- **The microphone is the computer's default input.** The Web Speech API can't choose a microphone, so pick it in the system sound settings (on a Mac: System Settings → Sound → Input). A microphone close to the speaker works far better than one across a noisy room.
+
+Every step is logged in the browser console, starting with `[speech]`, which helps when it doesn't hear you.
 
 Which command was meant is worked out on your machine by matching the words (`src/lib/voice.ts`), so commands need no AI call and no extra waiting (only questions go to Claude, and take a few seconds). If several commands are mentioned, the first one wins. The listening code is `src/components/whiteboard/useSpeechRecognition.ts`.
 
