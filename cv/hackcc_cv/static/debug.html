@@ -60,6 +60,7 @@
   <div class="row"><span>Connection</span><span id="conn" class="bad">connecting…</span></div>
   <div class="row"><span>Camera</span><span id="cam" class="muted">?</span></div>
   <div class="row"><span>Calibration</span><span id="cal" class="muted">?</span></div>
+  <div class="row"><span>Camera moved?</span><span id="drift" class="muted">?</span></div>
   <div class="row"><span>Hand tracking</span><span id="trk" class="muted">?</span></div>
   <div class="row"><span>Tool (double tap)</span><span id="tool">none</span></div>
   <div class="row"><span>Board moved (fist)</span><span id="pan">0, 0</span></div>
@@ -217,6 +218,12 @@
       case "calibration_targets": showTargets(e.targets); break;
       case "calibration_probe": showProbe(e); break;
       case "calibration_pattern": showPattern(e.markers, true, e.run); break;
+      case "drift": {
+        const el = $("drift");
+        el.textContent = `${e.status}${e.seen ? ` (${e.seen} markers, ${e.shift_px} px)` : ""}`;
+        el.className = e.status === "steady" ? "ok" : e.status === "off" || e.status === "unknown" ? "muted" : "bad";
+        break;
+      }
       case "hands": showHands(e); return;
       case "flash": showFlash(e, true); break;
       case "content_regions": showFound(e.regions, $("overlay")); break;
