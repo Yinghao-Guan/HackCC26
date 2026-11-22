@@ -20,7 +20,9 @@ from typing import Any, Literal
 
 import numpy as np
 
+from .drift import StaticMarker
 from .events import Display
+from .markers import STATIC_MARKER_IDS
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +47,11 @@ class Calibration:
     reprojection_error_px: float
     points: int
     created_at: float
+    # Printed markers around the board, as (id, x, y, size) in camera px, for drift checks.
+    static_markers: tuple[tuple[int, float, float, float], ...] = ()
+
+    def static(self) -> list[StaticMarker]:
+        return [StaticMarker(int(i), x, y, s) for i, x, y, s in self.static_markers]
 
     @classmethod
     def from_matrix(
@@ -56,6 +63,7 @@ class Calibration:
         board_size: tuple[float, float],
         reprojection_error_px: float,
         points: int,
+        static_markers: list[StaticMarker] | None = None,
     ) -> Calibration:
         rows = tuple(tuple(float(v) for v in row) for row in np.asarray(matrix))
         return cls(
@@ -66,6 +74,7 @@ class Calibration:
             reprojection_error_px=reprojection_error_px,
             points=points,
             created_at=time.time(),
+            static_markers=tuple((m.id, m.x, m.y, m.size) for m in static_markers or []),
         )
 
     def matrix(self) -> np.ndarray:
@@ -113,7 +122,32 @@ class Calibration:
             reprojection_error_px=error,
             points=int(data["points"]),
             created_at=created_at,
+            static_markers=_static_from(data.get("static_markers", []), (camera_w, camera_h)),
         )
+
+
+def _static_from(raw: Any, camera_size: tuple[int, int]) -> tuple[tuple[int, float, float, float], ...]:
+    """Printed-marker entries from a saved file (older files have none)."""
+    if not isinstance(raw, list):
+        raise CalibrationError("The printed marker list is damaged.")
+    width, height = camera_size
+    entries: list[tuple[int, float, float, float]] = []
+    for entry in raw:
+        if not isinstance(entry, list) or len(entry) != 4:
+            raise CalibrationError("Each printed marker needs an id, x, y and size.")
+        marker_id, x, y, size = int(entry[0]), float(entry[1]), float(entry[2]), float(entry[3])
+        valid = (
+            marker_id in STATIC_MARKER_IDS
+            and all(math.isfinite(v) for v in (x, y, size))
+            and size > 0
+            and 0 <= x <= width
+            and 0 <= y <= height
+            and marker_id not in {e[0] for e in entries}
+        )
+        if not valid:
+            raise CalibrationError("A printed marker entry is not valid.")
+        entries.append((marker_id, x, y, size))
+    return tuple(entries)
 
 
 def manual_targets(display: Display, inset: float = TARGET_INSET) -> list[tuple[float, float]]:
