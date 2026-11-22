@@ -35,6 +35,10 @@ def make_detector() -> cv2.aruco.ArucoDetector:
     parameters = cv2.aruco.DetectorParameters()
     # Sub-pixel corners: the calibration is only as good as these points.
     parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    # Printed markers around the board often sit near the edge of the camera's view; with
+    # OpenCV's default they are dropped there (tested: 1 of 4 found after a 12 px shift).
+    # RANSAC and the per-marker median already guard against an off corner at the edge.
+    parameters.minDistanceToBorder = 0
     return cv2.aruco.ArucoDetector(dictionary(), parameters)
 
 
