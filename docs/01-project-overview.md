@@ -61,8 +61,11 @@ flowchart LR
 ### Step 1: Digital whiteboard
 
 - One finger drawn on the board leaves a stroke that follows the finger, like an electronic whiteboard.
-- In the air (not touching the board), do a **thumb and index finger double tap** to switch from pen to eraser. Touch the board again to erase the strokes just written.
+- In the air (not touching the board), do a **thumb and index finger double tap** to switch between pen and eraser: pen → eraser, eraser → pen. With no tool selected, the first double tap picks the **eraser**. Touch the board again to erase the strokes just written.
+- Need more room? Hold an **open hand** up, **close it into a fist**, and move the fist: the board moves with it. **Open the hand** to stop.
 - Under the hood: shadow touch detection, homography, stroke smoothing, gesture recognition.
+
+All agreed gestures are listed in the [technical design, section 5](02-technical-design.md#5-gestures).
 
 ### Step 2: Function graph
 
@@ -75,9 +78,9 @@ flowchart LR
 - Stick a printed system of equations on the board, or write it with a real marker. The system does not know about it electronically; it must read it with the camera.
 - Trigger voice input and say something like: "Draw a 3D coordinate system for this system of equations." A 3D plot appears in a suitable empty place.
 - Then manipulate it:
-  - one finger drag: change the viewing angle
-  - two-finger pinch: zoom
-  - two-finger drag: move the plot
+  - **pinch and hold** (thumb and index) and move the hand: rotate the 3D model
+  - **pinch with both hands**, then stretch them apart to zoom in or bring them together to zoom out
+  - **reset**: hold **both hands open**, palms to the camera, still for **2 seconds** (a countdown ring shows on the board). The view goes back to the start: board position, zoom and 3D angle. Reset never changes the writing; use Undo to bring back erased ink.
 - Under the hood: the projector briefly flashes pure white (or black) over the region so the camera sees the physical writing cleanly, a multimodal model reads it, the layout engine places the plot where nothing is covered.
 
 ### Step 4: Voice: solve
@@ -111,7 +114,7 @@ Then show the physical-to-digital step (3) as the "it reads real marker writing"
 | Last | Step 3 in full (physical reading plus gestured 3D) | Heaviest block: CV reading, 3D rendering, multi-finger input |
 | Stretch | Automatic re-calibration finale | Comes almost for free if calibration is fully automatic from the start |
 
-Fallbacks for step 3 if time runs out: 3D from an on-screen equation plus voice only; single-finger rotate plus a zoom slider instead of two-finger gestures.
+Fallbacks for step 3 if time runs out: 3D from an on-screen equation plus voice only; on-board rotate, zoom and reset buttons instead of the two-hand zoom.
 
 ## 8. Non-goals
 
