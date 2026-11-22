@@ -24,6 +24,7 @@ from .aruco import (
 )
 from .calibration import Calibration, calibration_status_event
 from .camera import Camera
+from .drift import StaticMarker, static_markers_in
 from .markers import PatternMarker, grid_layout, pattern_event
 
 if TYPE_CHECKING:
@@ -54,10 +55,13 @@ def collect_frames(camera: Camera, count: int, timeout: float) -> list[np.ndarra
     return images
 
 
-def _find_and_solve(images: list[np.ndarray], layout: list[PatternMarker]) -> Solution:
-    """Runs in a thread: detection is CPU work."""
+def _find_and_solve(
+    images: list[np.ndarray], layout: list[PatternMarker]
+) -> tuple[Solution, list[StaticMarker]]:
+    """Runs in a thread: detection is CPU work. Also notes the printed markers it saw."""
     detector = make_detector()
-    return solve(median_corners([detect_markers(image, detector) for image in images]), layout)
+    corners = median_corners([detect_markers(image, detector) for image in images])
+    return solve(corners, layout), static_markers_in(corners)
 
 
 async def _progress(state: ServerState, message: str) -> None:
@@ -147,7 +151,7 @@ async def _calibrate(state: ServerState) -> None:
         await _progress(state, f"Looking for the markers (try {attempt} of {ATTEMPTS})…")
         images = await asyncio.to_thread(collect_frames, camera, FRAMES_PER_ATTEMPT, FRAME_TIMEOUT_SECONDS)
         try:
-            solution = await asyncio.to_thread(_find_and_solve, images, layout)
+            solution, statics = await asyncio.to_thread(_find_and_solve, images, layout)
             break
         except AutoCalibrationError as error:
             last_error = str(error)
@@ -168,6 +172,7 @@ async def _calibrate(state: ServerState) -> None:
         board_size=(board.width, board.height),
         reprojection_error_px=solution.error_px,
         points=solution.points,
+        static_markers=statics,
     )
     # Shielded: once saving starts, the saved file and the one in use must match.
     await asyncio.shield(state.adopt_calibration(calibration))
