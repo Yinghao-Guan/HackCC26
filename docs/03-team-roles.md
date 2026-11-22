@@ -44,7 +44,7 @@ Own: everything the projector shows.
 
 Own: all model and voice integration.
 
-- Text in and out; ElevenLabs speech to text and text to speech (ElevenLabs is a HackCC sponsor).
+- Text in and out; speech to text with the browser's built-in speech recognition (Web Speech API, no key needed); text to speech for replies is still to be chosen.
 - Multimodal handwriting recognition (strokes image or camera crop to LaTeX).
 - Solve and explain; find the wrong step (returns step number, explanation, corrected continuation, bounding box).
 - **Proposed extra duties** (D has the lightest early load):

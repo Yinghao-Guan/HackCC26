@@ -12,6 +12,7 @@ export interface Size {
 
 export const ANSWER_CARD_WIDTH = 380;
 export const CHECK_CARD_WIDTH = 440;
+export const REPLY_CARD_WIDTH = 460;
 export const GRAPH_PLOT_SIZE = 400;
 export const GRAPH_CARD_WIDTH = GRAPH_PLOT_SIZE + 40;
 
@@ -38,6 +39,16 @@ export function graph3dCardSize(surfaceCount: number, pointCount: number): Size 
 
 export function checkCardSize(stepCount: number): Size {
   return { width: CHECK_CARD_WIDTH, height: 280 + stepCount * 48 };
+}
+
+/** A reply is the question, then each block: prose wraps onto several lines, a formula takes one. */
+export function replyCardSize(question: string, blocks: { kind: "text" | "math"; content: string }[]): Size {
+  const lines = (text: string, perLine: number) => Math.max(1, Math.ceil(text.length / perLine));
+  const body = blocks.reduce(
+    (sum, block) => sum + (block.kind === "math" ? 56 : lines(block.content, 44) * 28 + 8),
+    0,
+  );
+  return { width: REPLY_CARD_WIDTH, height: 110 + lines(question, 48) * 24 + body };
 }
 
 const overlaps = (a: Rect, b: Rect) =>

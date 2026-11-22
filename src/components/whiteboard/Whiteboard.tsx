@@ -8,7 +8,16 @@ import {
   useState,
   type WheelEvent,
 } from "react";
-import { requestCheck, requestGraph, requestSolve, type AiAction, type AiStatus } from "./ai";
+import { parseSpoken, type VoiceCommand } from "@/lib/voice";
+import {
+  requestAsk,
+  requestCheck,
+  requestGraph,
+  requestSolve,
+  type AiAction,
+  type AiStatus,
+  type VoiceStatus,
+} from "./ai";
 import { AnswerCard } from "./AnswerCard";
 import { boardReducer, cardSize, INITIAL_BOARD, type CardContent } from "./board";
 import { CheckCard } from "./CheckCard";
@@ -18,14 +27,24 @@ import { Graph3DCard } from "./Graph3DCard";
 import { GraphCard } from "./GraphCard";
 import { placeCard, viewToReveal, type Rect } from "./layout";
 import { MistakeMark } from "./MistakeMark";
+import { ReplyCard } from "./ReplyCard";
 import { SettingsPanel } from "./SettingsPanel";
 import { DEFAULT_SETTINGS, sizeOf, type WhiteboardSettings } from "./settings";
 import type { Point, Stroke, StrokeDraft } from "./strokes";
 import { TEXT_LINE_HEIGHT } from "./text";
 import { TextEditor, type TextEdit } from "./TextEditor";
 import { graphFromTypedText } from "./typedGraph";
+import { useSpeechRecognition } from "./useSpeechRecognition";
 
 const ORIGIN: Point = { x: 0, y: 0 };
+
+// What the panel says when a spoken command is understood.
+const VOICE_REPLIES: Record<VoiceCommand, string> = {
+  solve: "Solving what's on the board.",
+  graph: "Graphing what's on the board.",
+  check: "Checking your steps.",
+  undo: "Undid the last change.",
+};
 
 // The check route accepts at most this many numbered lines.
 const MAX_CHECK_LINES = 60;
@@ -35,6 +54,7 @@ export function Whiteboard() {
   const [settings, setSettings] = useState<WhiteboardSettings>(DEFAULT_SETTINGS);
   const [board, dispatch] = useReducer(boardReducer, INITIAL_BOARD);
   const [ai, setAi] = useState<AiStatus>({ state: "idle" });
+  const [voice, setVoice] = useState<VoiceStatus>({ state: "idle" });
   const [edit, setEdit] = useState<TextEdit | null>(null);
   // Which part of the (endless) board is on screen: the board point at the top-left corner.
   const [view, setView] = useState<Point>(ORIGIN);
@@ -281,6 +301,102 @@ export function Whiteboard() {
   const graph = useCallback(() => runAi("graph"), [runAi]);
   const check = useCallback(() => runAi("check"), [runAi]);
 
+  /**
+   * Ask the AI a question and write its answer on the board. If something is written on
+   * screen it is shown too, in case the question is about it ("explain this step").
+   */
+  const askAi = useCallback(
+    async (question: string) => {
+      const rect = boardRef.current?.getBoundingClientRect();
+      const viewport = {
+        x: view.x,
+        y: view.y,
+        width: rect?.width ?? 0,
+        height: rect?.height ?? 0,
+      };
+      const ink = exportInk(board.strokes, viewport);
+
+      // Update the line in the Voice section that says what is happening with this question.
+      const say = (text: string) =>
+        setVoice((current) =>
+          current.state === "message" && current.heard === question ? { ...current, text } : current,
+        );
+
+      setAi({ state: "loading", action: "ask" });
+      try {
+        const result = await requestAsk(question, ink?.dataUrl ?? null);
+        // With nothing written, put the answer near the top-left of what you are looking at.
+        const near = ink?.bounds ?? { x: viewport.x + 16, y: viewport.y + 16, width: 0, height: 0 };
+        addCard({ kind: "reply", question, blocks: result.blocks }, near, viewport);
+        setAi({ state: "idle" });
+        say("Answered on the board.");
+      } catch (error) {
+        setAi({
+          state: "message",
+          tone: "error",
+          text: error instanceof Error ? error.message : "Something went wrong.",
+        });
+        say("Couldn't answer that. See the message above.");
+      }
+    },
+    [board.strokes, view, addCard],
+  );
+
+  /** Something was said: do what it asks for, or if it is a question, answer it. */
+  const handleSpeech = useCallback(
+    (heard: string) => {
+      const spoken = parseSpoken(heard);
+      if (spoken.kind === "unknown") {
+        setVoice({
+          state: "message",
+          tone: "info",
+          heard,
+          text: "I didn't catch a command or a question. Try “solve this”, “graph this”, “check my work”, or ask a question.",
+        });
+        return;
+      }
+
+      const undoing = spoken.kind === "command" && spoken.command === "undo";
+      if (!undoing && ai.state === "loading") {
+        setVoice({
+          state: "message",
+          tone: "info",
+          heard,
+          text: "Still working on the last request. Try again in a moment.",
+        });
+        return;
+      }
+
+      if (spoken.kind === "question") {
+        setVoice({ state: "message", tone: "info", heard, text: "Thinking about your question." });
+        void askAi(heard);
+        return;
+      }
+      setVoice({ state: "message", tone: "info", heard, text: VOICE_REPLIES[spoken.command] });
+      if (spoken.command === "undo") undo();
+      else void runAi(spoken.command);
+    },
+    [ai.state, askAi, runAi, undo],
+  );
+
+  const {
+    listening,
+    hearing,
+    start: startListening,
+    stop: stopListening,
+  } = useSpeechRecognition({
+    onSpeech: handleSpeech,
+    onProblem: (text, tone) => setVoice({ state: "message", tone, text }),
+  });
+  const toggleVoice = useCallback(() => {
+    if (listening) {
+      stopListening();
+    } else if (startListening()) {
+      // Only clear the last message once listening has really begun, so a stray tap doesn't erase it.
+      setVoice({ state: "idle" });
+    }
+  }, [listening, startListening, stopListening]);
+
   // Ctrl/Cmd+Z undoes the last change to the board.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -354,6 +470,8 @@ export function Whiteboard() {
                     <CheckCard card={card} onDismiss={dismiss} />
                   </div>
                 );
+              case "reply":
+                return <ReplyCard key={card.id} card={card} onDismiss={dismiss} />;
             }
           })}
         </div>
@@ -366,9 +484,11 @@ export function Whiteboard() {
         canClear={board.strokes.length > 0 || board.cards.length > 0}
         canResetView={view.x !== 0 || view.y !== 0}
         ai={ai}
+        voice={listening ? { state: "listening", heard: hearing } : voice}
         onSolve={solve}
         onGraph={graph}
         onCheck={check}
+        onVoiceToggle={toggleVoice}
         onUndo={undo}
         onClear={clear}
         onResetView={resetView}
