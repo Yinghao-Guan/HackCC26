@@ -4,9 +4,9 @@ The camera side of the projected whiteboard. One Python process owns the camera 
 publishes everything it sees as JSON events on a WebSocket that the web app listens to.
 See [`docs/02-technical-design.md`](../docs/02-technical-design.md) for the design.
 
-Status: **Phase 2**. Camera, event bus, fake finger, preview, debug page, the manual
-four-corner calibration and the automatic ArUco calibration work. Hand tracking, gestures,
-reading the board and drift detection come next.
+Status: **Phase 3**. Camera, event bus, fake finger, preview, debug page, manual and
+automatic (ArUco) calibration, hand tracking and the five agreed gestures work. Reading the
+board and drift detection come next.
 
 ## Setup
 
@@ -34,6 +34,7 @@ Flags win over environment variables, which win over the defaults.
 | `--width` / `--height` | `CV_WIDTH` / `CV_HEIGHT` | `1280` / `720` | Requested camera size |
 | `--fake` | `CV_FAKE_POINTER=1` | off | Publish a fake finger drawing a figure eight |
 | `--no-camera` | `CV_CAMERA=0` | camera on | Run without opening a camera |
+| `--no-gestures` | `CV_GESTURES=0` | on | No hand tracking or gestures |
 | `--port` | `CV_PORT` | `8765` | Server port (binds to 127.0.0.1) |
 | | `CV_ALLOWED_ORIGINS` | localhost:3000 and :8765 | Comma-separated web pages allowed to connect |
 | | `CV_DATA_DIR` | `cv/data` | Where calibrations are saved (git-ignored) |
@@ -46,7 +47,8 @@ Flags win over environment variables, which win over the defaults.
 | `/health` | Status as JSON: camera, clients, display size |
 | `/preview.mjpg` | Live camera view with the frame rate |
 | `/debug` | Test board page: connection, camera and calibration status, fake ink, targets |
-| `/calibrate` | Operator page for the manual four-corner calibration |
+| `/calibrate` | Operator page for calibration (automatic and manual) |
+| `/gestures` | Gesture Lab: try the gestures and see what the hand tracker sees |
 
 ## Automatic calibration (ArUco markers)
 
@@ -87,8 +89,15 @@ the board page or camera image changes size: then calibrate again.
 
 ## Gestures (agreed with the team)
 
-Built in a later phase; listed here so every part plans for them. Details in
+Hand tracking runs with the camera (MediaPipe, up to two hands, about 20 ms a frame) and
+turns hand shapes into the events below. Details in
 [`docs/02-technical-design.md`, section 5](../docs/02-technical-design.md#5-gestures).
+**Try them on the Gesture Lab: <http://127.0.0.1:8765/gestures>.** It shows the camera with
+each hand's skeleton and pose, the live measurements behind the pose next to their
+thresholds (thumb–index gap, curled and straight fingers), a card per gesture that lights
+up when it fires (with a counter and a visual: tool badge, sliding board, turning cube,
+zoom box, reset ring), and a plain-language log of what happened. Tune thresholds in
+`hand_pose.py` (pose shapes) and `gestures.py` (timings).
 
 | Gesture | Action |
 |---------|--------|
@@ -98,6 +107,38 @@ Built in a later phase; listed here so every part plans for them. Details in
 | Thumb + index pinch and hold, move | Rotate a 3D model |
 | Pinch with both hands, apart / together | Zoom in / out |
 | Both hands open, palms to the camera, still for 2 s | Reset the view (board position, zoom, 3D angle). View only: never touches the writing; Undo brings back erased ink |
+
+### Gesture events
+
+Positions are board px when calibrated. Before calibration they are camera px in a
+**mirror view** (x flipped, like a selfie), because a camera facing you sees your right
+as its left: this way moving your hand right moves things right. `hands.calibrated` says
+which; `camera_points` are always raw camera px. `dx`/`dy` are the change since the
+previous `move`.
+
+```json
+{ "type": "gesture", "name": "double_tap", "hand": "Right", "t": 1767000000.1 }
+{ "type": "pan", "phase": "start", "x": 640.0, "y": 400.0, "hand": "Right", "t": 1767000000.2 }
+{ "type": "pan", "phase": "move", "x": 642.0, "y": 410.0, "dx": 2.0, "dy": 10.0, "hand": "Right", "t": 1767000000.3 }
+{ "type": "rotate", "phase": "move", "x": 520.0, "y": 300.0, "dx": 4.5, "dy": -1.0, "hand": "Left", "t": 1767000000.4 }
+{ "type": "zoom", "phase": "move", "scale": 1.35, "cx": 640.0, "cy": 400.0, "t": 1767000000.5 }
+{ "type": "reset_progress", "progress": 0.45, "t": 1767000000.6 }
+{ "type": "gesture", "name": "reset", "t": 1767000001.0 }
+{ "type": "hands", "calibrated": true, "hands": [{ "hand": "Right", "pose": "pinch",
+  "palm": [600.0, 420.0], "index_tip": [560.0, 300.0], "pinch": [552.0, 304.0],
+  "camera_points": [[612.0, 530.5], "... 21 points, camera px"], "gap": 0.12, "curled": 3, "extended": 1 }] }
+{ "type": "tracking", "status": "ok", "message": "", "fps": 30.2 }
+```
+
+What the web app does with them:
+
+- `double_tap`: pen → eraser, eraser → pen; with no tool selected, the eraser.
+- `pan`: move the board by `dx`, `dy` on every `move`.
+- `rotate`: turn the 3D model under `x`, `y` (from `start`) by `dx`, `dy`.
+- `zoom`: `scale` is relative to the zoom when the gesture started, centred on `cx`, `cy`.
+- `reset_progress`: draw a countdown ring (`0` hides it); `reset` puts the view back
+  (board position, zoom, 3D angle) and never touches the writing.
+- `zoom` `end` and `pan`/`rotate` `end` may have `null` positions; keep the last ones.
 
 ## Events
 
