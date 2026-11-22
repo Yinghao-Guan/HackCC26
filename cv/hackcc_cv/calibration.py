@@ -142,7 +142,7 @@ def stale_reason(
     return None
 
 
-Status = Literal["none", "ok", "stale", "error"]
+Status = Literal["none", "ok", "stale", "error", "calibrating"]
 
 
 def calibration_status_event(
