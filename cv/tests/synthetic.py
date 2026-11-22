@@ -72,3 +72,43 @@ def camera_frame(
         rng = np.random.default_rng(seed)
         view = np.clip(view + rng.normal(0, noise, view.shape), 0, 255).astype(np.uint8)
     return cv2.cvtColor(view, cv2.COLOR_GRAY2BGR)
+
+
+# -- physical writing on the board (Phase 4) ------------------------------------------
+
+# Where the "marker writing" is on the board, as (x, y, w, h) in board CSS px.
+WRITING = {
+    "equation_1": (150, 140, 420, 70),
+    "equation_2": (150, 330, 520, 70),
+    "sketch": (860, 420, 220, 200),
+}
+
+
+def render_writing_board() -> np.ndarray:
+    """A white board with two handwritten-looking lines and a sketched box."""
+    w, h = BOARD_SIZE
+    board = np.full((h, w), 245, np.uint8)
+    for name in ("equation_1", "equation_2"):
+        x, y, bw, bh = WRITING[name]
+        # Letters as separate thick strokes with gaps, like handwriting.
+        for i, cx in enumerate(range(x, x + bw, 52)):
+            top = y + (i % 2) * 8
+            cv2.line(board, (cx, top), (min(cx + 34, x + bw), y + bh - (i % 3) * 6), 30, 7)
+            cv2.line(board, (cx, y + bh // 2), (min(cx + 30, x + bw), y + bh // 2), 30, 6)
+    x, y, bw, bh = WRITING["sketch"]
+    cv2.rectangle(board, (x + 4, y + 4), (x + bw - 4, y + bh - 4), 40, 8)
+    return board
+
+
+def camera_view(board: np.ndarray, *, brightness: float = 1.0) -> np.ndarray:
+    """The board image as the oblique camera sees it (BGR)."""
+    w, h = CAMERA_SIZE
+    view = cv2.warpPerspective(board, board_to_camera(), (w, h), borderValue=70)
+    view = np.clip(view.astype(np.float64) * brightness, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(view, cv2.COLOR_GRAY2BGR)
+
+
+def true_camera_to_board() -> np.ndarray:
+    """The exact camera px -> board CSS px mapping for the synthetic scene."""
+    css_from_centre = np.array([[1, 0, 0.5], [0, 1, 0.5], [0, 0, 1]], dtype=np.float64)
+    return css_from_centre @ np.linalg.inv(board_to_camera())
