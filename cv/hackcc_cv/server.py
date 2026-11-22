@@ -4,7 +4,8 @@ Routes:
   /ws           the event bus (JSON messages, see events.py)
   /health       status as JSON
   /preview.mjpg live camera view with the frame rate, for setting up
-  /debug        a test page that shows the bus and the camera
+  /debug        a test page that shows the bus and draws what a board page draws
+  /calibrate    the operator page for the manual four-corner calibration
 """
 
 from __future__ import annotations
@@ -29,27 +30,22 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.websockets import WebSocketDisconnect
 
 from . import __version__
-from .bus import Bus
+from .calibration import CalibrationError, load_calibration
 from .camera import Camera, CameraError, StatusListener
 from .config import Config
 from .events import (
-    DEFAULT_DISPLAY,
-    Display,
-    Hello,
     MessageError,
-    Ping,
     camera_status_event,
     error_event,
-    hello_ack_event,
     parse_client_message,
-    pong_event,
 )
 from .fake import run_fake_pointer
+from .handlers import ServerState, handle_message
 from .preview import annotate, encode_jpeg
 
 log = logging.getLogger(__name__)
 
-DEBUG_PAGE = Path(__file__).resolve().parent / "static" / "debug.html"
+STATIC = Path(__file__).resolve().parent / "static"
 PREVIEW_FPS = 15
 PREVIEW_STALL_SECONDS = 5.0
 POLICY_VIOLATION = 1008  # WebSocket close code
@@ -73,19 +69,6 @@ class _SerialSocket:
             await self.websocket.send_json(data)
 
 
-class _State:
-    """What the server remembers between requests.
-
-    `display` is the board page's size. The most recent `hello` wins, so keep only
-    one board page open (the debug page sends a hello too).
-    """
-
-    def __init__(self) -> None:
-        self.display: Display = DEFAULT_DISPLAY
-        self.camera: Camera | None = None
-        self.shutting_down = False
-
-
 def _render_preview(image: Any, fps: float, label: str) -> bytes:
     return encode_jpeg(annotate(image, fps, label))
 
@@ -95,9 +78,23 @@ def _status_to_event(status: dict[str, Any]) -> dict[str, Any]:
     return camera_status_event(status["status"], message=status["message"], details=details)
 
 
+def _load_saved_calibration(state: ServerState) -> None:
+    try:
+        saved = load_calibration(state.config.data_dir)
+    except CalibrationError as error:
+        state.calibration_problem = f"The saved calibration could not be used: {error} Recalibrate."
+        log.error("%s", state.calibration_problem)
+        return
+    if saved is not None:
+        state.calibration.set(saved)
+        log.info("Loaded the %s calibration from %s", saved.method, state.config.data_dir)
+    # New pages get the status when they connect; after that only changes are announced.
+    state.remember_announced(state.calibration_event())
+
+
 def create_app(config: Config, camera_factory: CameraFactory = _default_camera) -> FastAPI:
-    bus = Bus()
-    state = _State()
+    state = ServerState(config)
+    bus = state.bus
 
     def camera_status() -> dict[str, Any]:
         if state.camera is None:
@@ -107,8 +104,17 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         bus.attach_loop(asyncio.get_running_loop())
+        _load_saved_calibration(state)
         if config.camera_enabled:
-            camera = camera_factory(config, lambda s: bus.publish_threadsafe(_status_to_event(s)))
+            loop = asyncio.get_running_loop()
+
+            def on_camera_status(status: dict[str, Any]) -> None:
+                # Runs on the camera thread. A new camera size can make the calibration stale.
+                bus.publish_threadsafe(_status_to_event(status))
+                with contextlib.suppress(RuntimeError):  # loop closed while shutting down
+                    asyncio.run_coroutine_threadsafe(state.announce_calibration(), loop)
+
+            camera = camera_factory(config, on_camera_status)
             state.camera = camera
             try:
                 await asyncio.to_thread(camera.start)
@@ -146,6 +152,7 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
             "ok": True,
             "version": __version__,
             "camera": camera_status(),
+            "calibration": state.calibration_event(),
             "clients": bus.client_count,
             "fake_pointer": config.fake_pointer,
             "display": {"width": display.width, "height": display.height, "dpr": display.dpr},
@@ -157,7 +164,11 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
 
     @app.get("/debug", response_class=HTMLResponse)
     async def debug_page() -> str:
-        return DEBUG_PAGE.read_text(encoding="utf-8")
+        return (STATIC / "debug.html").read_text(encoding="utf-8")
+
+    @app.get("/calibrate", response_class=HTMLResponse)
+    async def calibrate_page() -> str:
+        return (STATIC / "calibrate.html").read_text(encoding="utf-8")
 
     @app.get("/preview.mjpg", response_model=None)
     async def preview() -> StreamingResponse | JSONResponse:
@@ -197,6 +208,7 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
         bus.add(client)  # before the first status, so no change can slip in between
         try:
             await client.send_json(_status_to_event(camera_status()))
+            await client.send_json(state.calibration_event())
             await _serve(websocket, client, state)
         except WebSocketDisconnect:
             pass
@@ -206,8 +218,8 @@ def create_app(config: Config, camera_factory: CameraFactory = _default_camera) 
     return app
 
 
-async def _serve(websocket: WebSocket, client: _SerialSocket, state: _State) -> None:
-    """Answer one browser's messages until it disconnects."""
+async def _serve(websocket: WebSocket, client: _SerialSocket, state: ServerState) -> None:
+    """Answer one page's messages until it disconnects."""
     while True:
         message = await websocket.receive()
         if message["type"] == "websocket.disconnect":
@@ -221,9 +233,4 @@ async def _serve(websocket: WebSocket, client: _SerialSocket, state: _State) -> 
         except MessageError as error:
             await client.send_json(error_event(str(error)))
             continue
-
-        if isinstance(parsed, Hello):
-            state.display = parsed.display
-            await client.send_json(hello_ack_event(parsed.display))
-        elif isinstance(parsed, Ping):
-            await client.send_json(pong_event())
+        await handle_message(parsed, client, state)
