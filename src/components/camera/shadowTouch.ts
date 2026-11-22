@@ -1,17 +1,20 @@
 // Shadow touch: telling when a fingertip touches the board from the finger's shadow
 // (docs/02-technical-design.md, section 4). The projector lights the board, so the
 // hand casts a shadow on it. A fingertip high above the board has its shadow
-// far from it, and as the finger comes down the shadow tip slides under it. At
-// contact they meet.
+// ahead of it, and as the finger comes down the shadow tip slides back under it.
+// At contact the finger hides its own shadow: the shadow stops at the fingertip
+// or behind it.
 //
 // Method: compare the camera picture with a picture of the empty board (the
 // reference). Pixels that are clearly darker than before, and not part of the
-// hand, are shadow. Then find the tip of the fingertip's own shadow: the shadow
-// that is farthest ahead along the finger, in a box laid along it. The gap is the
-// distance from the fingertip to that shadow tip, in hand sizes so that it means
-// the same near and far. (Looking at the nearest shadow of any kind does not work:
-// the shadow of the arm and the rest of the hand lies close to the fingertip even
-// when the finger is high.) Plain functions on pixel data, no React, no canvas.
+// hand, are shadow. Then see how far the shadow reaches ahead of the fingertip
+// along the finger, in a box laid along it. That is the gap, in hand sizes so
+// that it means the same near and far: 0 when the shadow stops at or behind the
+// fingertip (touching), and larger the higher the finger is. (Measuring the
+// distance to the shadow's far tip, or to the nearest shadow, does not work: when
+// the finger touches, its own shadow is hidden and what is left is a bump of the
+// hand's shadow at the knuckle, far behind the fingertip, which looks like a tip.)
+// Plain functions on pixel data, no React, no canvas.
 
 import { luminance } from "./luma";
 
@@ -38,11 +41,13 @@ export interface Reference {
 export const MIN_BOARD_LUMA = 40;
 
 /**
- * Where to look for the tip of the fingertip's shadow: a box laid along the finger,
- * this many hand sizes behind the fingertip, ahead of it, and to either side.
- * The shadow of the arm and of the rest of the hand mostly lies outside its sides.
+ * Where to look for the fingertip's shadow: a box laid along the finger, this many
+ * hand sizes behind the fingertip, ahead of it, and to either side. It reaches
+ * back far enough to take in the hand's own shadow, so that "there is a shadow
+ * around the hand, but none past the fingertip" can be told from "no shadow at
+ * all". The shadow of the arm mostly lies outside its sides.
  */
-export const BAND_BEHIND = 0.4;
+export const BAND_BEHIND = 1.6;
 export const BAND_AHEAD = 2.4;
 export const BAND_SIDE = 1.2;
 
@@ -51,6 +56,18 @@ export const FRAMES_TO_SWITCH = 2;
 
 const SEARCH_STEP = 2; // look at every second pixel: plenty for shadows, and four times faster
 const TIP_DEPTH = 0.06; // the shadow tip is the average of the shadow within this many hand sizes of its farthest point
+// The shadow reaches this far ahead only where at least this many shadow pixels do, so a few strays do not count.
+const MIN_TIP_PIXELS = 6;
+// Fewer shadow pixels than this in the box is not a shadow, just specks along the edge of the hand.
+const MIN_SHADOW_CELLS = 10;
+// A shadow that ends at or behind the fingertip only means touching if it lies against the hand, within this many hand sizes.
+const ADJACENT = 0.3;
+
+// How thick the parts of the hand are, in hand sizes, for hiding the hand from the shadow search.
+const FINGER_RADIUS = 0.08; // the core of a finger: the rest of its width is told apart by skin color
+const PALM_RADIUS = 0.15;
+const FOREARM_RADIUS = 0.45;
+const FOREARM_LENGTH = 3;
 
 export function lumaOf(pixels: Pixels): Float32Array {
   const { data } = pixels;
@@ -103,12 +120,34 @@ function convexHull(points: Point[]): Point[] {
   return [...build(sorted), ...build([...sorted].reverse())];
 }
 
-/** The part of the picture taken up by a hand: a convex shape, and how big the hand is. */
+/** A thick line: the part of the picture within `radius` of the segment from `a` to `b`. */
+export interface Capsule {
+  a: Point;
+  b: Point;
+  radius: number;
+}
+
+/**
+ * The part of the picture taken up by a hand, as thick lines along the fingers
+ * and the forearm plus the palm. (One convex shape around the whole hand would
+ * also cover the lit board between the fingers, and with it any shadow there.)
+ */
 export interface HandShape {
-  hull: Point[];
+  capsules: Capsule[];
+  /** The palm: the smallest convex shape around the wrist and the knuckles. */
+  palm: Point[];
   /** The size of the hand in pixels (palm width or palm length, whichever is larger). */
   scale: number;
 }
+
+// The landmarks along each finger, from the base out to the tip (the thumb first).
+const FINGER_CHAINS = [
+  [1, 2, 3, 4],
+  [5, 6, 7, 8],
+  [9, 10, 11, 12],
+  [13, 14, 15, 16],
+  [17, 18, 19, 20],
+];
 
 /**
  * The shape of a hand from its 21 landmarks, in pixels. The forearm is included
@@ -117,24 +156,48 @@ export interface HandShape {
 export function handShape(points: Point[]): HandShape {
   const wrist = points[0];
   const middleKnuckle = points[9];
-  const back = { x: wrist.x - middleKnuckle.x, y: wrist.y - middleKnuckle.y };
-  const forearm = [1.5, 3].map((k) => ({ x: wrist.x + back.x * k, y: wrist.y + back.y * k }));
   const scale = Math.max(distance(points[5], points[17]), distance(wrist, middleKnuckle));
-  return { hull: convexHull([...points, ...forearm]), scale };
+
+  const capsules: Capsule[] = [];
+  for (const chain of FINGER_CHAINS) {
+    for (let i = 0; i < chain.length - 1; i++) {
+      capsules.push({ a: points[chain[i]], b: points[chain[i + 1]], radius: FINGER_RADIUS * scale });
+    }
+  }
+  // The forearm continues from the wrist away from the knuckles.
+  capsules.push({
+    a: wrist,
+    b: {
+      x: wrist.x + (wrist.x - middleKnuckle.x) * FOREARM_LENGTH,
+      y: wrist.y + (wrist.y - middleKnuckle.y) * FOREARM_LENGTH,
+    },
+    radius: FOREARM_RADIUS * scale,
+  });
+
+  const palm = convexHull([wrist, points[1], points[5], points[9], points[13], points[17]]);
+  return { capsules, palm, scale };
 }
 
-/** How far a point is outside the hand's shape (0 inside it). */
-export function distanceToHand(p: Point, hand: HandShape): number {
-  const { hull } = hand;
+/** How far a point is outside a convex shape (0 inside it). */
+function distanceToConvex(p: Point, shape: Point[]): number {
   let inside = true;
   let nearest = Infinity;
-  for (let i = 0; i < hull.length; i++) {
-    const a = hull[i];
-    const b = hull[(i + 1) % hull.length];
+  for (let i = 0; i < shape.length; i++) {
+    const a = shape[i];
+    const b = shape[(i + 1) % shape.length];
     if ((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x) < 0) inside = false;
     nearest = Math.min(nearest, distanceToSegment(p, a, b));
   }
   return inside ? 0 : nearest;
+}
+
+/** How far a point is outside the hand's shape (0 inside it). */
+export function distanceToHand(p: Point, hand: HandShape): number {
+  let nearest = distanceToConvex(p, hand.palm) - PALM_RADIUS * hand.scale;
+  for (const { a, b, radius } of hand.capsules) {
+    nearest = Math.min(nearest, distanceToSegment(p, a, b) - radius);
+  }
+  return Math.max(0, nearest);
 }
 
 /** The direction a finger points in the picture: from its middle joint to its tip, as a unit vector. */
@@ -181,43 +244,143 @@ export function exposureGain(frame: Float32Array, ref: Reference, hand: HandShap
   return ratios[ratios.length >> 1];
 }
 
+/**
+ * What the skin looks like: its color without its brightness (the share of red and
+ * of green in red + green + blue). Skin is warmer and more colorful than the shadow
+ * of a gray or white board, which has only the color of the room's light. That tells
+ * the hand's edge from the shadow next to it, to the pixel, where the landmarks
+ * alone are good to a few pixels.
+ */
+export interface SkinModel {
+  r: number;
+  g: number;
+}
+
+const MIN_COLOR_SUM = 60; // darker than this, a pixel's color is mostly noise
+
+function colorAt(colors: Pixels, x: number, y: number, radius: number): [number, number, number] | null {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+  for (let yy = Math.max(0, y - radius); yy <= Math.min(colors.height - 1, y + radius); yy++) {
+    for (let xx = Math.max(0, x - radius); xx <= Math.min(colors.width - 1, x + radius); xx++) {
+      const i = (yy * colors.width + xx) * 4;
+      r += colors.data[i];
+      g += colors.data[i + 1];
+      b += colors.data[i + 2];
+      count++;
+    }
+  }
+  return count === 0 ? null : [r / count, g / count, b / count];
+}
+
+const median = (values: number[]) => [...values].sort((a, b) => a - b)[values.length >> 1];
+
+/**
+ * The skin color of a hand, taken from the picture along its index finger (the
+ * landmarks from the knuckle to the tip). The middle value is used, so a few
+ * samples that miss the finger do not matter. Null if it cannot be told.
+ */
+export function skinModelFrom(colors: Pixels, hand: Point[]): SkinModel | null {
+  const samples: [number, number, number][] = [];
+  for (const [from, to] of [
+    [5, 6],
+    [6, 7],
+    [7, 8],
+  ]) {
+    for (let k = 0; k < 8; k++) {
+      const t = (k + 0.5) / 8;
+      const color = colorAt(
+        colors,
+        Math.round(hand[from].x + (hand[to].x - hand[from].x) * t),
+        Math.round(hand[from].y + (hand[to].y - hand[from].y) * t),
+        1,
+      );
+      if (color) samples.push(color);
+    }
+  }
+  if (samples.length < 8) return null;
+
+  const r = median(samples.map((c) => c[0]));
+  const g = median(samples.map((c) => c[1]));
+  const b = median(samples.map((c) => c[2]));
+  const sum = r + g + b;
+  return sum < MIN_COLOR_SUM ? null : { r: r / sum, g: g / sum };
+}
+
+/** Is this pixel the color of skin? A tolerance of 0 says no to everything (the skin test is off). */
+function isSkin(colors: Pixels, index: number, skin: SkinModel, tolerance: number): boolean {
+  if (tolerance <= 0) return false;
+  const r = colors.data[index * 4];
+  const g = colors.data[index * 4 + 1];
+  const b = colors.data[index * 4 + 2];
+  const sum = r + g + b;
+  if (sum < MIN_COLOR_SUM) return false;
+  return Math.hypot(r / sum - skin.r, g / sum - skin.g) <= tolerance;
+}
+
 export interface ShadowParams {
   /** A pixel is shadow when it is darker than this share of the empty board (0 to 1). */
   shadowRatio: number;
   /** How far past the hand's outline to stay clear of, in hand sizes, so skin is not taken for shadow. */
   handMargin: number;
+  /** How far a pixel's color may differ from the skin's and still count as skin (0 turns this off). */
+  skinTolerance: number;
 }
 
 export interface ShadowReading {
   /**
-   * How far the tip of the fingertip's shadow is from the fingertip, in hand
-   * sizes, not counting the hand's own margin. About 0 when the fingertip touches
-   * its shadow and larger the higher the finger is. Null if no shadow was found
-   * in the box along the finger.
+   * How far the shadow reaches past the fingertip along the finger, in hand sizes.
+   * 0 when the shadow stops at the fingertip or behind it and lies against the
+   * hand, which is what touching looks like (the finger hides its own shadow).
+   * Larger the higher the finger is, because the shadow's tip then shows up ahead
+   * of the fingertip. Null when there is no shadow in the box along the finger, or
+   * when the shadow there is not against the hand (a hand high above the board).
    */
   gap: number | null;
-  /** Where the tip of the fingertip's shadow is, in pixels. */
+  /**
+   * The far end of the shadow in the box, in pixels. When touching this is not the
+   * fingertip's shadow but a bump of the hand's shadow behind the fingertip.
+   */
   shadowTip: Point | null;
   /** How many pixels in the box along the finger are shadow. */
   shadowPixels: number;
+  /** How many dark pixels in the box were set aside because they are the color of skin. */
+  skinPixels: number;
   /** How much the picture's exposure has changed since the reference. */
   gain: number;
 }
 
-/**
- * Find the tip of a fingertip's shadow. `direction` is the way the finger points
- * (see fingerDirection). If `paint` (RGBA pixels the same size as the picture) is
- * given, the pixels found to be shadow are painted cyan in it.
- */
-export function readShadow(
-  frame: Float32Array,
-  ref: Reference,
-  tip: Point,
-  direction: Point,
-  hand: HandShape,
-  params: ShadowParams,
-  paint?: Uint8ClampedArray,
-): ShadowReading {
+export interface ShadowInput {
+  /** The brightness of the picture. */
+  luma: Float32Array;
+  /** The colors of the picture, the same size. */
+  colors: Pixels;
+  reference: Reference;
+  /** The fingertip, in pixels. */
+  tip: Point;
+  /** The way the finger points (see fingerDirection). */
+  direction: Point;
+  hand: HandShape;
+  /** The color of the skin, or null if it could not be told (then only the hand's shape is used). */
+  skin: SkinModel | null;
+  params: ShadowParams;
+  /** RGBA pixels the same size as the picture: shadow found is painted cyan in it, and skin-colored dark pixels orange. */
+  paint?: Uint8ClampedArray;
+}
+
+const noReading = (gain: number): ShadowReading => ({
+  gap: null,
+  shadowTip: null,
+  shadowPixels: 0,
+  skinPixels: 0,
+  gain,
+});
+
+/** See how far the shadow reaches past a fingertip, and whether it lies against the hand. */
+export function readShadow(input: ShadowInput): ShadowReading {
+  const { luma: frame, colors, reference: ref, tip, direction, hand, skin, params, paint } = input;
   const { width, height, luma } = ref;
   const gain = exposureGain(frame, ref, hand, params.handMargin);
   const margin = params.handMargin * hand.scale;
@@ -231,14 +394,30 @@ export function readShadow(
   const bottom = Math.min(height - 1, Math.ceil(tip.y + radius));
   const columns = Math.floor((right - left) / SEARCH_STEP) + 1;
   const rows = Math.floor((bottom - top) / SEARCH_STEP) + 1;
-  if (columns <= 0 || rows <= 0) return { gap: null, shadowTip: null, shadowPixels: 0, gain };
+  if (columns <= 0 || rows <= 0) return noReading(gain);
 
   // Where a pixel is in the box: how far ahead of the fingertip along the finger, and how far to the side.
   const alongOf = (x: number, y: number) => ((x - tip.x) * direction.x + (y - tip.y) * direction.y) / scale;
   const acrossOf = (x: number, y: number) => ((x - tip.x) * -direction.y + (y - tip.y) * direction.x) / scale;
 
-  // First find the pixels in the box that are darker than the empty board and are not the hand.
+  const paintBlock = (x: number, y: number, red: number, green: number, blue: number, alpha: number) => {
+    if (!paint) return;
+    for (let dy = 0; dy < SEARCH_STEP && y + dy < height; dy++) {
+      for (let dx = 0; dx < SEARCH_STEP && x + dx < width; dx++) {
+        const p = ((y + dy) * width + x + dx) * 4;
+        paint[p] = red;
+        paint[p + 1] = green;
+        paint[p + 2] = blue;
+        paint[p + 3] = alpha;
+      }
+    }
+  };
+
+  // First find the pixels in the box that are darker than the empty board, are not the hand, and are
+  // not the color of skin. How far each is from the hand is kept, to see whether the shadow lies against it.
   const dark = new Uint8Array(columns * rows);
+  const fromHand = new Float32Array(columns * rows);
+  let skinPixels = 0;
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       const x = left + column * SEARCH_STEP;
@@ -249,13 +428,21 @@ export function readShadow(
       const i = y * width + x;
       if (luma[i] < MIN_BOARD_LUMA) continue;
       if (frame[i] / luma[i] / gain >= params.shadowRatio) continue;
-      if (distanceToHand({ x, y }, hand) <= margin) continue;
+      const away = distanceToHand({ x, y }, hand);
+      if (away <= margin) continue;
+      if (skin && isSkin(colors, i, skin, params.skinTolerance)) {
+        skinPixels++;
+        paintBlock(x, y, 251, 146, 60, 170);
+        continue;
+      }
       dark[row * columns + column] = 1;
+      fromHand[row * columns + column] = away;
     }
   }
 
   // Then keep those with at least three dark neighbors, so single noisy pixels do not count.
   const kept: { x: number; y: number; along: number }[] = [];
+  let nearestToHand = Infinity;
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
       if (!dark[row * columns + column]) continue;
@@ -269,24 +456,16 @@ export function readShadow(
       const x = left + column * SEARCH_STEP;
       const y = top + row * SEARCH_STEP;
       kept.push({ x, y, along: alongOf(x, y) });
-      if (paint) {
-        for (let dy = 0; dy < SEARCH_STEP && y + dy < height; dy++) {
-          for (let dx = 0; dx < SEARCH_STEP && x + dx < width; dx++) {
-            const p = ((y + dy) * width + x + dx) * 4;
-            paint[p] = 34;
-            paint[p + 1] = 211;
-            paint[p + 2] = 238;
-            paint[p + 3] = 190;
-          }
-        }
-      }
+      nearestToHand = Math.min(nearestToHand, fromHand[row * columns + column]);
+      paintBlock(x, y, 34, 211, 238, 190);
     }
   }
-  if (kept.length === 0) return { gap: null, shadowTip: null, shadowPixels: 0, gain };
+  // A few specks along the edge of the hand are not a shadow.
+  if (kept.length < MIN_SHADOW_CELLS) return { ...noReading(gain), skinPixels };
 
-  // The tip of the shadow is where it reaches farthest ahead along the finger.
-  let farthest = -Infinity;
-  for (const pixel of kept) farthest = Math.max(farthest, pixel.along);
+  // Where the shadow reaches farthest ahead along the finger, ignoring a few stray pixels.
+  const alongs = kept.map((pixel) => pixel.along).sort((a, b) => b - a);
+  const farthest = alongs[Math.min(MIN_TIP_PIXELS, alongs.length) - 1];
   let sumX = 0;
   let sumY = 0;
   let count = 0;
@@ -299,10 +478,14 @@ export function readShadow(
   }
   const shadowTip = { x: sumX / count, y: sumY / count };
 
+  // A shadow that ends at or behind the fingertip counts as touching only if it lies against the hand
+  // (the hand's own shadow). A shadow that is somewhere else, with the hand high above the board, does not.
+  const againstHand = nearestToHand <= ADJACENT * scale;
   return {
-    gap: Math.max(0, distance(shadowTip, tip) - margin) / scale,
+    gap: farthest > 0 ? farthest : againstHand ? 0 : null,
     shadowTip,
     shadowPixels: kept.length * SEARCH_STEP * SEARCH_STEP,
+    skinPixels,
     gain,
   };
 }

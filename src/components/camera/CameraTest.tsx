@@ -27,6 +27,7 @@ import {
   lumaOf,
   readShadow,
   releaseGap,
+  skinModelFrom,
   stepTouch,
   type HandShape,
   type Point,
@@ -59,8 +60,9 @@ type ResolutionKey = keyof typeof RESOLUTIONS;
 const SAMPLE_WIDTH = 640; // the picture is shrunk to this width to measure brightness and shadow
 const DEFAULT_DARK_THRESHOLD = 90;
 const DEFAULT_SHADOW_RATIO = 0.75;
-const DEFAULT_HAND_MARGIN = 0.15;
-const DEFAULT_TOUCH_BELOW = 0.25;
+const DEFAULT_HAND_MARGIN = 0.03;
+const DEFAULT_SKIN_TOLERANCE = 0.06;
+const DEFAULT_TOUCH_BELOW = 0.1;
 const REFERENCE_FRAMES = 10; // frames averaged into the picture of the empty board
 const COUNTDOWN_MS = 3000; // time to take your hand away before the empty board is captured
 const TRACE_MS = 6000; // how much of the gap's history the trace shows
@@ -130,6 +132,8 @@ interface Readout {
   gap: number | null;
   touching: boolean;
   shadowPixels: number | null;
+  /** How many dark pixels near the hand were set aside because they are the color of skin. */
+  skinPixels: number | null;
   /** How much the camera's exposure has changed since the empty board was captured. */
   gain: number | null;
   reference: ReferenceStatus;
@@ -154,6 +158,7 @@ const EMPTY_READOUT: Readout = {
   gap: null,
   touching: false,
   shadowPixels: null,
+  skinPixels: null,
   gain: null,
   reference: { kind: "none" },
   snapshot: null,
@@ -370,8 +375,9 @@ function drawHands(
 /**
  * Show what the shadow touch detection is working with: the hand's shape with its
  * margin (shadow is only looked for outside it), the box along the finger where
- * the tip of its shadow is looked for, and a line from the fingertip to that
- * shadow tip. `sampleToPicture` turns the shrunk picture's pixels into the video's.
+ * shadow is looked for, a line across the finger at the fingertip (shadow that
+ * reaches past it means the finger is above the board), and a line to the far end
+ * of the shadow. `sampleToPicture` turns the shrunk picture's pixels into the video's.
  */
 function drawShadowDebug(
   ctx: CanvasRenderingContext2D,
@@ -400,19 +406,38 @@ function drawShadowDebug(
   ctx.stroke();
   ctx.setLineDash([]);
 
+  // The line across the finger at the fingertip.
+  const side = { x: -direction.y, y: direction.x };
+  const half = 0.6 * hand.scale;
   ctx.beginPath();
-  hand.hull.forEach((point, index) => {
+  ctx.moveTo((tip.x - side.x * half) * sampleToPicture, (tip.y - side.y * half) * sampleToPicture);
+  ctx.lineTo((tip.x + side.x * half) * sampleToPicture, (tip.y + side.y * half) * sampleToPicture);
+  ctx.lineWidth = line * 1.5;
+  ctx.strokeStyle = "rgba(14, 165, 233, 0.95)";
+  ctx.stroke();
+
+  // The hand, with its margin: each finger and the forearm as a thick line, and the palm.
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(236, 72, 153, 0.2)";
+  for (const { a, b, radius } of hand.capsules) {
+    ctx.beginPath();
+    ctx.moveTo(a.x * sampleToPicture, a.y * sampleToPicture);
+    ctx.lineTo(b.x * sampleToPicture, b.y * sampleToPicture);
+    ctx.lineWidth = 2 * (radius + margin * hand.scale) * sampleToPicture;
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  hand.palm.forEach((point, index) => {
     const x = point.x * sampleToPicture;
     const y = point.y * sampleToPicture;
     if (index === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.closePath();
-  ctx.fillStyle = "rgba(236, 72, 153, 0.16)";
+  ctx.fillStyle = "rgba(236, 72, 153, 0.2)";
   ctx.fill();
-  ctx.lineJoin = "round";
-  ctx.lineWidth = 2 * margin * hand.scale * sampleToPicture;
-  ctx.strokeStyle = "rgba(236, 72, 153, 0.16)";
+  ctx.lineWidth = 2 * (0.15 + margin) * hand.scale * sampleToPicture;
   ctx.stroke();
 
   if (reading?.shadowTip) {
@@ -565,6 +590,7 @@ export function CameraTest() {
   const [showShadow, setShowShadow] = useState(true);
   const [shadowRatio, setShadowRatio] = useState(DEFAULT_SHADOW_RATIO);
   const [handMargin, setHandMargin] = useState(DEFAULT_HAND_MARGIN);
+  const [skinTolerance, setSkinTolerance] = useState(DEFAULT_SKIN_TOLERANCE);
   const [touchBelow, setTouchBelow] = useState(DEFAULT_TOUCH_BELOW);
   const [maskOn, setMaskOn] = useState(false);
   const [threshold, setThreshold] = useState(DEFAULT_DARK_THRESHOLD);
@@ -577,6 +603,7 @@ export function CameraTest() {
   const othersShorterId = useId();
   const shadowRatioId = useId();
   const handMarginId = useId();
+  const skinToleranceId = useId();
   const touchBelowId = useId();
   const thresholdId = useId();
 
@@ -597,6 +624,7 @@ export function CameraTest() {
     showShadow: true,
     shadowRatio: DEFAULT_SHADOW_RATIO,
     handMargin: DEFAULT_HAND_MARGIN,
+    skinTolerance: DEFAULT_SKIN_TOLERANCE,
     touchBelow: DEFAULT_TOUCH_BELOW,
   });
   // The picture of the empty board that shadow is found against. It outlives camera restarts.
@@ -766,9 +794,20 @@ export function CameraTest() {
       showShadow,
       shadowRatio,
       handMargin,
+      skinTolerance,
       touchBelow,
     };
-  }, [showHands, maskOn, threshold, othersShorter, showShadow, shadowRatio, handMargin, touchBelow]);
+  }, [
+    showHands,
+    maskOn,
+    threshold,
+    othersShorter,
+    showShadow,
+    shadowRatio,
+    handMargin,
+    skinTolerance,
+    touchBelow,
+  ]);
 
   // Copy the numbers into state a few times a second (state per video frame would be wasteful).
   useEffect(() => {
@@ -948,30 +987,38 @@ export function CameraTest() {
         metrics.darkShare = null;
       }
 
-      // Shadow touch: how far is the tip of the fingertip's shadow from the fingertip?
+      // Shadow touch: does the shadow reach past the fingertip, or stop at it against the hand?
       let reading: ShadowReading | null = null;
       if (
         reference &&
         reference.width === SAMPLE_WIDTH &&
         reference.height === sampleHeight &&
+        primary &&
         primaryTip &&
         primaryDirection &&
         primaryShape
       ) {
-        reading = readShadow(
+        reading = readShadow({
           luma,
+          colors: picture,
           reference,
-          primaryTip,
-          primaryDirection,
-          primaryShape,
-          { shadowRatio: options.shadowRatio, handMargin: options.handMargin },
+          tip: primaryTip,
+          direction: primaryDirection,
+          hand: primaryShape,
+          skin: skinModelFrom(picture, primary.pixels),
+          params: {
+            shadowRatio: options.shadowRatio,
+            handMargin: options.handMargin,
+            skinTolerance: options.skinTolerance,
+          },
           paint,
-        );
+        });
       }
       touch = stepTouch(touch, reading ? reading.gap : null, options.touchBelow);
       metrics.gap = reading ? reading.gap : null;
       metrics.touching = touch.touching;
       metrics.shadowPixels = reading ? reading.shadowPixels : null;
+      metrics.skinPixels = reading ? reading.skinPixels : null;
       metrics.gain = reading ? reading.gain : null;
 
       if (paintLayer && maskImage) {
@@ -1013,6 +1060,7 @@ export function CameraTest() {
             params: {
               shadowRatio: options.shadowRatio,
               handMargin: options.handMargin,
+              skinTolerance: options.skinTolerance,
               touchBelow: options.touchBelow,
               othersShorter: options.othersShorter,
             },
@@ -1110,7 +1158,7 @@ export function CameraTest() {
     : readout.hands === 0
       ? "No hand"
       : readout.gap === null
-        ? "No shadow near the fingertip"
+        ? "No shadow seen around the hand"
         : readout.touching
           ? "Touching the board"
           : "Hovering above the board";
@@ -1372,8 +1420,9 @@ export function CameraTest() {
           />
 
           <dl className="flex flex-col gap-1.5">
-            <Row label="Gap, fingertip to shadow (hand sizes)" value={show(readout.gap, 2)} />
-            <Row label="Shadow pixels near the fingertip" value={show(readout.shadowPixels)} />
+            <Row label="Shadow past the fingertip (hand sizes)" value={show(readout.gap, 2)} />
+            <Row label="Shadow pixels around the hand" value={show(readout.shadowPixels)} />
+            <Row label="Skin-colored pixels set aside" value={show(readout.skinPixels)} />
             <Row
               label="Exposure change since the empty board"
               value={readout.gain === null ? "–" : `×${readout.gain.toFixed(2)}`}
@@ -1389,14 +1438,14 @@ export function CameraTest() {
             className="w-full rounded-lg border border-neutral-200 bg-white"
           />
           <p className="text-xs text-neutral-500">
-            The line is the gap over the last 6 seconds (0 at the bottom, 1.5 at the top). A touch
-            starts below the green dashed line and ends above the amber one. Green bands are the
-            times it counted as touching.
+            The line is how far the shadow reaches past your fingertip, over the last 6 seconds (0
+            at the bottom, 1.5 at the top). A touch starts below the green dashed line and ends
+            above the amber one. Green bands are the times it counted as touching.
           </p>
 
           <div className="flex items-center justify-between text-sm">
             <label htmlFor={touchBelowId} className="font-medium">
-              Touching when the gap is below
+              Touching when the shadow reaches less than
             </label>
             <span className="tabular-nums text-neutral-500">{touchBelow.toFixed(2)}</span>
           </div>
@@ -1435,11 +1484,29 @@ export function CameraTest() {
           <input
             id={handMarginId}
             type="range"
-            min={0.05}
+            min={0}
             max={0.6}
             step={0.01}
             value={handMargin}
             onChange={(e) => setHandMargin(Number(e.target.value))}
+            className="h-8 w-full cursor-pointer accent-neutral-900"
+          />
+          <div className="flex items-center justify-between text-sm">
+            <label htmlFor={skinToleranceId} className="font-medium">
+              Skin color tolerance
+            </label>
+            <span className="tabular-nums text-neutral-500">
+              {skinTolerance === 0 ? "off" : skinTolerance.toFixed(3)}
+            </span>
+          </div>
+          <input
+            id={skinToleranceId}
+            type="range"
+            min={0}
+            max={0.2}
+            step={0.005}
+            value={skinTolerance}
+            onChange={(e) => setSkinTolerance(Number(e.target.value))}
             className="h-8 w-full cursor-pointer accent-neutral-900"
           />
 
@@ -1447,12 +1514,21 @@ export function CameraTest() {
             Take your hand away from the board, press Capture, and keep still for a moment. Then
             touch the board with your finger and lift it, and watch the line: it should drop below
             the green line when you touch and rise above it when you hover. The dashed blue box
-            lies along your finger: only the shadow inside it counts, and the gap is measured from
-            your fingertip to the far tip of that shadow (the ring at the end of the line), not to
-            the nearest shadow. Pixels darker than the empty board by the set share count as
-            shadow (cyan). Raise Hand margin if the pink outline does not cover your skin and skin
-            shows up as cyan. Do not write on the board while testing: projected ink is as dark as
-            a shadow.
+            lies along your finger and only the shadow inside it counts (cyan: pixels darker than
+            the empty board by the set share). The solid blue line across the finger marks your
+            fingertip. When you hover, the shadow reaches past that line, ahead of the fingertip.
+            When you touch, your finger hides its own shadow, so the shadow stops at the line or
+            behind it (the ring at the end of the other line is the far end of the shadow, which
+            then is a bump of your hand&apos;s shadow). This assumes the light comes from behind
+            your hand, so that the shadow falls ahead of the fingertip when it is above the board.
+            Dark pixels that are the color of your skin are set aside (orange), because they are
+            your hand, not a shadow: the skin color is read from your index finger on every frame,
+            and a shadow is more gray than skin. Raise the tolerance if skin still shows up as
+            cyan; lower it (or turn it off) if real shadow turns orange. If the shadow found is
+            not against your hand, or none is found, it does not count as touching, so a hand far
+            above the board is not mistaken for a touch. Raise Hand margin if the pink outline
+            does not cover your skin. Do not write on the board while testing: projected ink is
+            as dark as a shadow.
           </p>
 
           <div className="grid grid-cols-2 gap-2">
